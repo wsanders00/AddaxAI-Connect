@@ -3,7 +3,7 @@ import os
 import pytest
 import tempfile
 from utils import ValidationError
-from validators import validate_mime_type, validate_file_size
+from validators import validate_mime_type, validate_file_size, validate_image
 
 
 class TestValidateMimeType:
@@ -36,3 +36,17 @@ class TestValidateFileSize:
         f.write_bytes(b"\x00" * (2 * 1024 * 1024))  # 2 MB
         with pytest.raises(ValidationError, match="File too large"):
             validate_file_size(str(f), max_mb=1)
+
+
+def test_bulk_image_limit_matches_accepted_upload_sizes(tmp_path):
+    f = tmp_path / "large.jpg"
+    with f.open("wb") as stream:
+        stream.write(b"\xff\xd8\xff")
+        stream.truncate(50 * 1024 * 1024)
+    validate_image(str(f), max_mb=50)
+    with pytest.raises(ValidationError, match="10MB limit"):
+        validate_image(str(f))
+    with f.open("ab") as stream:
+        stream.write(b"x")
+    with pytest.raises(ValidationError, match="50MB limit"):
+        validate_image(str(f), max_mb=50)

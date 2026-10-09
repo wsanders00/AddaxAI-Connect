@@ -68,6 +68,9 @@ from utils import is_valid_gps  # noqa: E402
 
 PROGRESS_PERSIST_EVERY = 25
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+# Match the bulk API and browser's per-file limit. Other ingestion paths keep
+# their default 10 MiB validation limit.
+BULK_IMAGE_MAX_MB = 50
 # Wall-clock cap per file inside the worker. Normal ingestion (EXIF
 # read + MinIO write + thumbnail) is 1-2 s; a corrupt JPEG that hangs
 # Pillow or a stuck MinIO connection could otherwise wedge the entire
@@ -444,7 +447,7 @@ def _process_zip_entry(
 
         # Validation matches the live FTPS path. Failure is per-file.
         try:
-            validate_image(tmp_path)
+            validate_image(tmp_path, max_mb=BULK_IMAGE_MAX_MB)
         except Exception as exc:
             logger.warning(
                 "Skipping bulk upload entry, validation failed",

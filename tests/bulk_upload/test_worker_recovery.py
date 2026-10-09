@@ -166,7 +166,7 @@ def test_lost_claim_is_checked_before_image_asset_upload(monkeypatch):
     uploaded = []
     session = Session()
     monkeypatch.setattr(bulk_worker, "get_db_session", lambda: fake_session(session))
-    monkeypatch.setattr(bulk_worker, "validate_image", lambda _path: None)
+    monkeypatch.setattr(bulk_worker, "validate_image", lambda _path, **_kwargs: None)
     monkeypatch.setattr(bulk_worker, "extract_exif", lambda _path: {})
     monkeypatch.setattr(
         bulk_worker, "get_corrected_datetime", lambda *_args, **_kwargs: __import__("datetime").datetime.now()

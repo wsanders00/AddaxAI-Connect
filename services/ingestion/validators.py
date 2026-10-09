@@ -50,18 +50,19 @@ def validate_file_size(filepath: str, max_mb: int) -> None:
         )
 
 
-def validate_image(filepath: str) -> None:
+def validate_image(filepath: str, max_mb: int = 10) -> None:
     """
     Run all validations for image files.
 
     Args:
         filepath: Path to image file
+        max_mb: Image size limit for the caller's upload path
 
     Raises:
         ValidationError: If any validation fails
     """
     validate_mime_type(filepath)
-    validate_file_size(filepath, max_mb=10)
+    validate_file_size(filepath, max_mb=max_mb)
 
     logger.debug("Image file validation passed", filepath=filepath)
 
