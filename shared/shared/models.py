@@ -26,6 +26,15 @@ class Image(Base):
     storage_path = Column(String(512), nullable=False)
     thumbnail_path = Column(String(512), nullable=True)  # Path to thumbnail in MinIO
     status = Column(String(50), nullable=False, default="pending", index=True)
+    # Durable lease metadata for bounded recovery of Redis queue work. This is
+    # separate from ingested_at: ingestion time never changes as stages run.
+    pipeline_updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    pipeline_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    pipeline_error = Column(Text, nullable=True)
+    pipeline_failed_stage = Column(String(20), nullable=True)
+    pipeline_claim_id = Column(String(36), nullable=True)
     image_metadata = Column(JSON)  # Renamed from 'metadata' to avoid SQLAlchemy reserved name
 
     # Server wall-clock at ingestion (aware UTC). captured_at is the camera clock,
@@ -775,6 +784,15 @@ class BulkUploadJob(Base):
     status = Column(
         String(30), nullable=False, server_default='queued', index=True
     )
+    # Lease for the worker's staging/ingestion pass. The job remains in
+    # `processing` after this pass while its linked images run through ML.
+    pipeline_updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    pipeline_claim_id = Column(String(36), nullable=True)
+    pipeline_attempts = Column(Integer, nullable=False, server_default="0")
+    pipeline_error = Column(Text, nullable=True)
+    staging_complete = Column(Boolean, nullable=False, server_default="false")
     total_files = Column(Integer, nullable=False, server_default='0')
     processed_files = Column(Integer, nullable=False, server_default='0')
     skipped_files = Column(Integer, nullable=False, server_default='0')

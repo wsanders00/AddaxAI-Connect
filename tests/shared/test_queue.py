@@ -186,6 +186,23 @@ def test_consume_forever_priority_without_heartbeat_never_stamps():
     assert fake.set_calls == []
 
 
+def test_maintenance_runs_after_a_popped_message_callback_fails():
+    """A callback error must still give the DB reconciler a chance to repair
+    work whose Redis message was already destructively popped."""
+    queue = RedisQueue(QUEUE_IMAGE_INGESTED)
+    queue.client = FakeRedisClient([(QUEUE_IMAGE_INGESTED, json.dumps({"image_uuid": "image-1"}))])
+    repaired = []
+
+    def callback(_message):
+        raise RuntimeError("simulated failure after BRPOP")
+
+    with pytest.raises(AssertionError, match="ran past"):
+        queue.consume_forever_priority(
+            PRIORITY, callback, maintenance_callback=lambda: repaired.append("scan")
+        )
+    assert repaired == ["scan"]
+
+
 def test_stamp_heartbeat_round_trips_through_parse_heartbeat():
     """The writer and the reader have to agree. An unparseable stamp
     reads as "never seen" and would alert on a healthy worker."""

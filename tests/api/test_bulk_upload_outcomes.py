@@ -72,7 +72,7 @@ class _RetrySession:
 def _job(total, ledger):
     return SimpleNamespace(
         id=1, status="processing", total_files=total,
-        manifest={"upload_ledger": ledger}, finished_at=None,
+        manifest={"upload_ledger": ledger}, finished_at=None, staging_complete=True,
     )
 
 
@@ -83,6 +83,16 @@ async def test_api_finalizer_keeps_missing_expected_files_pending():
 
     await _finalise_done_jobs(db, [job], {}, {})
 
+    assert job.status == "processing"
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_api_finalizer_waits_for_staging_cleanup_before_releasing_worker_claim():
+    job = _job(1, {"0": {"outcome": "queued", "image_uuid": "image-1", "accepted": True}})
+    job.staging_complete = False
+    db = _FakeSession(job, classified=[(1, 1)])
+    await _finalise_done_jobs(db, [job], {1: 1}, {})
     assert job.status == "processing"
     assert db.commits == 0
 
@@ -261,16 +271,33 @@ def test_mixed_classified_and_failed_batch_is_partial():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("image_state,error,stage", [
-    ("pending", None, None),
-    ("classified", None, None),
-    ("failed", "Detection failed; use Retry.", "detection"),
+async def test_legacy_file_log_reconciles_classified_images_and_duplicates():
+    job = _job(2, {})
+    job.manifest = {"file_log": [
+        {"filename": "a.jpg", "outcome": "processed", "image_uuid": "image-a"},
+        {"filename": "b.jpg", "outcome": "duplicate", "existing_uuid": "older-b"},
+    ]}
+    db = _FakeSession(job, classified=[(1, 1)])
+    await _finalise_done_jobs(db, [job], {}, {})
+    assert job.status == "done"
+    ledger = bulk_upload_router.ledger_from_manifest(job.manifest)
+    assert ledger["0"]["image_uuid"] == "image-a"
+    assert ledger["1"]["outcome"] == "duplicate"
+    assert job.total_files == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger_outcome,image_state,error,stage", [
+    ("queued", "pending", None, None),
+    ("queued", "classified", None, None),
+    ("queued", "failed", "Detection failed; use Retry.", "detection"),
+    ("failed", "classified", None, None),
 ])
-async def test_csv_stream_reports_actual_pipeline_state(image_state, error, stage):
+async def test_csv_stream_reports_actual_pipeline_state(ledger_outcome, image_state, error, stage):
     import csv
     import io
     job = SimpleNamespace(id=7, manifest={"upload_ledger": {"0": {
-        "filename": "fixture.jpg", "outcome": "queued", "image_uuid": "fixture-image",
+        "filename": "fixture.jpg", "outcome": ledger_outcome, "image_uuid": "fixture-image",
     }}})
 
     class Session:

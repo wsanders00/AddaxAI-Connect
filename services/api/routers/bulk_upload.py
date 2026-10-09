@@ -322,11 +322,15 @@ async def _finalise_done_jobs(
         return
     current_jobs = (await db.execute(
         select(BulkUploadJob)
-        .where(BulkUploadJob.id.in_([job.id for job in jobs]))
+        .where(
+            BulkUploadJob.id.in_([job.id for job in jobs]),
+            BulkUploadJob.status == "processing",
+            BulkUploadJob.staging_complete.is_(True),
+        )
         .with_for_update()
         .execution_options(populate_existing=True)
     )).scalars().all()
-    active = [job for job in current_jobs if job.status == "processing"]
+    active = [job for job in current_jobs if job.status == "processing" and job.staging_complete]
     if not active:
         return
     job_ids = [job.id for job in active]
@@ -497,6 +501,9 @@ def _job_to_response(
     outcome_warning = None
     if job.status == "done" and job.total_files == 0 and not ledger and not (manifest or {}).get("file_log"):
         outcome_warning = "Legacy job has no reliable per-file outcome records; historical counts are unknown."
+    elif job.status in {"done", "partial", "failed"} and not (job.manifest or {}).get("upload_ledger"):
+        if not ledger or len(ledger) != job.total_files:
+            outcome_warning = "Legacy expected-file count cannot be reconciled with recorded outcomes; historical totals are unknown."
     return BulkUploadJobResponse(
         uuid=job.uuid,
         project_id=job.project_id,
@@ -1398,7 +1405,7 @@ async def get_bulk_upload_log(
         state, row["pipeline_error"], row["pipeline_failed_stage"] = pipeline_errors.get(
             row["image_uuid"], ("", "", "")
         )
-        if row["outcome"] in {"processed", "queued"} and state:
+        if state:
             row["outcome"] = state
 
     def stream() -> Any:

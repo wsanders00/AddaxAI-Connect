@@ -27,7 +27,7 @@ import time
 import uuid
 import zipfile
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterator, Optional
 
 import redis
@@ -39,7 +39,7 @@ sys.path.insert(0, "/ingestion_lib")
 
 from PIL import Image as PILImage
 from PIL.ExifTags import TAGS
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 
 from shared.bulk_jobs import is_bulk_job_cancelled
 from shared.camera_profiles import identify_camera_profile
@@ -47,6 +47,7 @@ from shared.config import get_settings
 from shared.database import get_db_session
 from shared.logger import get_logger, set_image_id
 from shared.models import BulkUploadJob, Camera, Image
+from shared.bulk_outcomes import ledger_from_manifest, terminal_status
 from shared.queue import (
     QUEUE_BULK_UPLOAD_JOB,
     QUEUE_BULK_UPLOAD_JOB_PROCESS,
@@ -75,6 +76,8 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 # bad frame does not eat the whole batch.
 PER_FILE_TIMEOUT_SECONDS = 60
 PROGRESS_HEARTBEAT_RETRY_SECONDS = 5
+JOB_LEASE_SECONDS = 10 * 60
+MAX_JOB_ATTEMPTS = 3
 
 
 def _new_progress_redis():
@@ -210,14 +213,141 @@ def _parse_iso_date(value):
 logger = get_logger("bulk-upload")
 
 
-def _set_status(job_uuid: str, **fields) -> None:
+class _LostBulkClaim(RuntimeError):
+    """Raised when a reclaimed bulk pass attempts another durable write."""
+
+
+def _set_status(job_uuid: str, claim_id: Optional[str] = None, **fields) -> bool:
     """Update one BulkUploadJob row with the given fields."""
     with get_db_session() as session:
+        stmt = update(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
+        if claim_id is not None:
+            stmt = stmt.where(
+                BulkUploadJob.status == "processing",
+                BulkUploadJob.pipeline_claim_id == claim_id,
+                BulkUploadJob.staging_complete.is_(False),
+            )
+        if "pipeline_updated_at" not in fields and claim_id is not None:
+            fields["pipeline_updated_at"] = datetime.now(timezone.utc)
+        result = session.execute(stmt.values(**fields))
+        return result.rowcount == 1
+
+
+def _persist_file_outcome(
+    job_uuid: str, index: Optional[int], entry: dict, claim_id: str
+) -> None:
+    """Persist one source-file result while holding the authoritative job row."""
+    if index is None:
+        return
+    with get_db_session() as session:
+        stmt = select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
+        stmt = stmt.where(
+            BulkUploadJob.status == "processing",
+            BulkUploadJob.pipeline_claim_id == claim_id,
+            BulkUploadJob.staging_complete.is_(False),
+        ).with_for_update()
         job = session.execute(
-            select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
-        ).scalar_one()
-        for key, value in fields.items():
-            setattr(job, key, value)
+            stmt
+        ).scalar_one_or_none()
+        if job is None:
+            raise _LostBulkClaim(f"Bulk job claim lost before outcome write: {job_uuid}")
+        manifest = dict(job.manifest or {})
+        ledger = dict(manifest.get("upload_ledger") or {})
+        key = str(index)
+        prior = dict(ledger.get(key) or {})
+        # The staging object proves server acceptance even for a job created
+        # before the ledger field was introduced.
+        accepted = bool(prior.get("accepted", True))
+        prior.update({k: v for k, v in entry.items() if v is not None})
+        prior["accepted"] = accepted
+        ledger[key] = prior
+        manifest["upload_ledger"] = ledger
+        job.manifest = manifest
+        job.pipeline_updated_at = datetime.now(timezone.utc)
+
+
+def _staged_file_index(object_key: str) -> Optional[int]:
+    tail = object_key.rsplit("/", 1)[-1]
+    prefix = tail.split("_", 1)[0] if "_" in tail else ""
+    return int(prefix) if prefix.isdigit() else None
+
+
+def _claim_process_job(job_uuid: str) -> Optional[str]:
+    """Claim one processing pass with a database compare-and-set."""
+    claim_id = str(uuid.uuid4())
+    with get_db_session() as session:
+        result = session.execute(
+            update(BulkUploadJob)
+            .where(
+                BulkUploadJob.uuid == job_uuid,
+                BulkUploadJob.status == "processing",
+                BulkUploadJob.staging_complete.is_(False),
+                BulkUploadJob.pipeline_claim_id.is_(None),
+            )
+            .values(
+                pipeline_claim_id=claim_id,
+                pipeline_attempts=BulkUploadJob.pipeline_attempts + 1,
+                pipeline_updated_at=datetime.now(timezone.utc),
+                pipeline_error=None,
+            )
+        )
+        return claim_id if result.rowcount == 1 else None
+
+
+def _fail_missing_staged_files(
+    job_uuid: str, present_indexes: set[int], claim_id: str
+) -> int:
+    """Turn server-accepted uploads with vanished staging objects into failures."""
+    with get_db_session() as session:
+        stmt = select(BulkUploadJob).where(
+            BulkUploadJob.uuid == job_uuid,
+            BulkUploadJob.status == "processing",
+            BulkUploadJob.pipeline_claim_id == claim_id,
+            BulkUploadJob.staging_complete.is_(False),
+        ).with_for_update()
+        job = session.execute(
+            stmt
+        ).scalar_one_or_none()
+        if job is None:
+            raise _LostBulkClaim(f"Bulk job claim lost before missing-file reconciliation: {job_uuid}")
+        manifest = dict(job.manifest or {})
+        ledger = dict(manifest.get("upload_ledger") or {})
+        failed = 0
+        for raw_index, raw_entry in ledger.items():
+            if not str(raw_index).isdigit() or not isinstance(raw_entry, dict):
+                continue
+            index = int(raw_index)
+            if index in present_indexes:
+                continue
+            if raw_entry.get("accepted") and raw_entry.get("outcome") in {"uploaded", "processing"}:
+                entry = dict(raw_entry)
+                entry.update({"outcome": "failed", "reason": "staged_object_missing"})
+                ledger[str(raw_index)] = entry
+                failed += 1
+        if failed:
+            manifest["upload_ledger"] = ledger
+            job.manifest = manifest
+            job.pipeline_updated_at = datetime.now(timezone.utc)
+        return failed
+
+
+def _delete_staged_object(
+    job_uuid: str, claim_id: str, storage: StorageClient, object_key: str
+) -> None:
+    """Delete staging only while the active owner holds the job row lock."""
+    with get_db_session() as session:
+        job = session.execute(
+            select(BulkUploadJob).where(
+                BulkUploadJob.uuid == job_uuid,
+                BulkUploadJob.status == "processing",
+                BulkUploadJob.pipeline_claim_id == claim_id,
+                BulkUploadJob.staging_complete.is_(False),
+            ).with_for_update()
+        ).scalar_one_or_none()
+        if job is None:
+            raise _LostBulkClaim(f"Bulk job claim lost before staging deletion: {job_uuid}")
+        storage.delete_object(BUCKET_BULK_UPLOAD_STAGING, object_key)
+        job.pipeline_updated_at = datetime.now(timezone.utc)
 
 
 def _camera_storage_id(camera: Camera) -> str:
@@ -243,6 +373,9 @@ def _process_zip_entry(
     bulk_deployment_id: Optional[int] = None,
     use_profile: bool = False,
     time_offset_seconds: int = 0,
+    source_index: Optional[int] = None,
+    *,
+    claim_id: str,
 ) -> str:
     """
     Process a single ZIP entry end-to-end.
@@ -275,18 +408,33 @@ def _process_zip_entry(
     # Duplicate guard: same camera + same bytes was already imported.
     with get_db_session() as session:
         existing = session.execute(
-            select(Image.uuid).where(
+            select(Image.uuid, Image.bulk_upload_job_id).where(
                 Image.camera_id == camera_id,
                 Image.content_hash == content_hash,
             ).limit(1)
-        ).scalar_one_or_none()
+        ).first()
         if existing:
+            existing_uuid, existing_job_id = existing
+            if existing_job_id == bulk_upload_job_id and source_index is not None:
+                job = session.execute(
+                    select(BulkUploadJob).where(BulkUploadJob.id == bulk_upload_job_id)
+                ).scalar_one_or_none()
+                ledger = (job.manifest or {}).get("upload_ledger", {}) if job else {}
+                current = ledger.get(str(source_index), {})
+                linked_elsewhere = any(
+                    key != str(source_index) and item.get("image_uuid") == existing_uuid
+                    for key, item in ledger.items()
+                )
+                if current.get("image_uuid") == existing_uuid or (
+                    current.get("outcome") == "processing" and not linked_elsewhere
+                ):
+                    return {"outcome": "processed", "image_uuid": existing_uuid}
             logger.info(
                 "Skipping duplicate bulk upload entry",
                 entry=name,
-                existing_uuid=existing,
+                existing_uuid=existing_uuid,
             )
-            return {"outcome": "duplicate", "existing_uuid": existing}
+            return {"outcome": "duplicate", "existing_uuid": existing_uuid}
 
     suffix = os.path.splitext(name)[1] or ".jpg"
     tmp_handle, tmp_path = tempfile.mkstemp(suffix=suffix)
@@ -373,43 +521,83 @@ def _process_zip_entry(
             record_deployment_id = bulk_deployment_id
 
         image_uuid = str(uuid.uuid4())
-        storage_path = upload_image_to_minio(
-            tmp_path, camera_storage_id, image_uuid, clean_filename
-        )
-        try:
-            thumbnail_path = generate_and_upload_thumbnail(
+
+        def upload_assets():
+            storage = upload_image_to_minio(
                 tmp_path, camera_storage_id, image_uuid, clean_filename
             )
-        except Exception as exc:
-            logger.warning(
-                "Failed to generate thumbnail for bulk image",
-                entry=name,
-                error=str(exc),
-            )
-            thumbnail_path = None
+            try:
+                thumbnail = generate_and_upload_thumbnail(
+                    tmp_path, camera_storage_id, image_uuid, clean_filename
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to generate thumbnail for bulk image",
+                    entry=name,
+                    error=str(exc),
+                )
+                thumbnail = None
+            return storage, thumbnail
 
-        create_image_record(
-            image_uuid=image_uuid,
-            camera_id=camera_id,
-            filename=clean_filename,
-            storage_path=storage_path,
-            thumbnail_path=thumbnail_path,
-            captured_at=captured_at,
-            gps_location=record_gps,
-            exif_metadata=exif,
-            origin="bulk",
-            content_hash=content_hash,
-            bulk_upload_job_id=bulk_upload_job_id,
-            deployment_id=record_deployment_id,
-        )
+        # Serialize claim validation, Image insertion, and its ledger handoff.
+        # The lease reconciler cannot steal this job between the ownership
+        # check and the durable records.
+        with get_db_session() as session:
+            job = session.execute(
+                select(BulkUploadJob).where(
+                    BulkUploadJob.id == bulk_upload_job_id,
+                    BulkUploadJob.status == "processing",
+                    BulkUploadJob.pipeline_claim_id == claim_id,
+                    BulkUploadJob.staging_complete.is_(False),
+                ).with_for_update()
+            ).scalar_one_or_none()
+            if job is None:
+                raise _LostBulkClaim(
+                    f"Bulk job claim lost before image creation: {bulk_upload_job_id}"
+                )
+            # Keep the row lock across the bounded per-file MinIO write so
+            # stale recovery cannot invalidate this owner's deletion and
+            # Image/ledger commit window.
+            storage_path, thumbnail_path = upload_assets()
+            create_image_record(
+                image_uuid=image_uuid, camera_id=camera_id, filename=clean_filename,
+                storage_path=storage_path, thumbnail_path=thumbnail_path,
+                captured_at=captured_at, gps_location=record_gps,
+                exif_metadata=exif, origin="bulk", content_hash=content_hash,
+                bulk_upload_job_id=bulk_upload_job_id, deployment_id=record_deployment_id,
+                db_session=session,
+            )
+            if source_index is not None:
+                manifest = dict(job.manifest or {})
+                ledger = dict(manifest.get("upload_ledger") or {})
+                key = str(source_index)
+                prior = dict(ledger.get(key) or {})
+                prior.update({
+                    "outcome": "queued", "image_uuid": image_uuid,
+                    "filename": clean_filename,
+                    "accepted": bool(prior.get("accepted", True)),
+                })
+                ledger[key] = prior
+                manifest["upload_ledger"] = ledger
+                job.manifest = manifest
+            job.pipeline_updated_at = datetime.now(timezone.utc)
 
         set_image_id(image_uuid)
-        bulk_queue.publish({
-            "image_uuid": image_uuid,
-            "storage_path": storage_path,
-            "camera_id": camera_id,
-            "origin": "bulk",
-        })
+        try:
+            bulk_queue.publish({
+                "image_uuid": image_uuid,
+                "storage_path": storage_path,
+                "camera_id": camera_id,
+                "origin": "bulk",
+            })
+        except Exception as exc:
+            # The durable Image + ledger transaction is authoritative. The
+            # pending-image reconciler republishes it after its stale lease.
+            logger.warning(
+                "Bulk image saved but queue publish failed; recovery will retry",
+                image_uuid=image_uuid,
+                error=str(exc),
+            )
 
         return {"outcome": "processed", "image_uuid": image_uuid}
     finally:
@@ -704,6 +892,8 @@ def _process_prefix_job(
     bulk_deployment_id: Optional[int] = None,
     use_profile: bool = False,
     time_offset_seconds: int = 0,
+    *,
+    claim_id: str,
 ) -> None:
     """
     Process a new-style per-file bulk-upload job. Lists MinIO under
@@ -715,42 +905,31 @@ def _process_prefix_job(
     processed = 0
     duplicates = 0
     other_skipped = 0
-    file_log: list = []
+    failed = 0
 
     object_keys = sorted(_list_prefix(storage, staged_prefix))
-    actual_count = len(object_keys)
+    present_indexes = {
+        index for index in (_staged_file_index(key) for key in object_keys)
+        if index is not None
+    }
     logger.info(
         "Processing bulk upload prefix",
         job_uuid=job_uuid,
         staged_prefix=staged_prefix,
-        object_count=actual_count,
+        object_count=len(object_keys),
     )
-
-    # Reconcile total_files against what actually landed in MinIO. The
-    # client may have lost a handful of per-file POSTs to retries or
-    # network errors; the job's total_files was set to the client-
-    # claimed count at create-time. If we trust the original number,
-    # the row sits at 99 % forever because processed + skipped never
-    # equals total. Updating to the real count makes the row reach
-    # 100 % and the API's lazy auto-finalise flip the job to done.
-    with get_db_session() as session:
-        row = session.execute(
-            select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
-        ).scalar_one()
-        if row.total_files != actual_count:
-            logger.info(
-                "Reconciling bulk-upload total_files with MinIO count",
-                job_uuid=job_uuid,
-                claimed=row.total_files,
-                actual=actual_count,
-            )
-            row.total_files = actual_count
 
     for idx, key in enumerate(_heartbeat_progress(object_keys), start=1):
         # Object key shape: "{project_id}/{job_uuid}/{idx:06d}_{name}".
         # Recover the human filename for logs and storage paths.
         tail = key.rsplit("/", 1)[-1]
         filename = tail.split("_", 1)[1] if "_" in tail else tail
+        file_index = _staged_file_index(key)
+        _persist_file_outcome(
+            job_uuid, file_index,
+            {"outcome": "processing", "filename": filename, "object_key": key},
+            claim_id,
+        )
         try:
             raw = storage.download_fileobj(BUCKET_BULK_UPLOAD_STAGING, key)
             with _file_timeout(PER_FILE_TIMEOUT_SECONDS):
@@ -765,6 +944,8 @@ def _process_prefix_job(
                     bulk_deployment_id,
                     use_profile,
                     time_offset_seconds,
+                    source_index=file_index,
+                    claim_id=claim_id,
                 )
         except _FileTimeout:
             logger.warning(
@@ -772,7 +953,7 @@ def _process_prefix_job(
                 object_key=key,
                 timeout_s=PER_FILE_TIMEOUT_SECONDS,
             )
-            result = {"outcome": "skipped", "reason": "processing_timeout"}
+            result = {"outcome": "failed", "reason": "processing_timeout"}
         except Exception as exc:
             logger.warning(
                 "Skipping bulk upload object, unexpected error",
@@ -780,25 +961,33 @@ def _process_prefix_job(
                 error=str(exc),
                 exc_info=True,
             )
-            result = {"outcome": "skipped", "reason": "unexpected_error"}
+            result = {"outcome": "failed", "reason": "unexpected_error"}
 
         if result["outcome"] == "processed":
             processed += 1
+            ledger_entry = {"outcome": "queued", "filename": filename,
+                            "image_uuid": result.get("image_uuid"), "object_key": key}
         elif result["outcome"] == "duplicate":
             duplicates += 1
+            ledger_entry = {"outcome": "duplicate", "filename": filename,
+                            "existing_uuid": result.get("existing_uuid"), "object_key": key}
+        elif result["outcome"] == "failed":
+            failed += 1
+            ledger_entry = {"outcome": "failed", "filename": filename,
+                            "reason": result.get("reason"), "object_key": key}
         else:
             other_skipped += 1
+            ledger_entry = {"outcome": "skipped", "filename": filename,
+                            "reason": result.get("reason"), "object_key": key}
 
-        file_log.append({
-            "filename": filename,
-            "object_key": key,
-            **result,
-        })
+        _persist_file_outcome(job_uuid, file_index, ledger_entry, claim_id)
 
         # Best-effort cleanup as we go so a half-finished job does not
         # leave 5000 stale objects in MinIO.
         try:
-            storage.delete_object(BUCKET_BULK_UPLOAD_STAGING, key)
+            _delete_staged_object(job_uuid, claim_id, storage, key)
+        except _LostBulkClaim:
+            raise
         except Exception as exc:
             logger.warning(
                 "Failed to delete processed staging object",
@@ -807,7 +996,7 @@ def _process_prefix_job(
             )
 
         if idx % PROGRESS_PERSIST_EVERY == 0:
-            _set_status(job_uuid, skipped_files=duplicates + other_skipped)
+            _set_status(job_uuid, claim_id=claim_id, skipped_files=duplicates + other_skipped)
             # Cooperative stop: if the user cancelled mid-run, stop creating and
             # enqueuing more images. What is already queued is handled by the
             # detection/classification skip checks.
@@ -819,20 +1008,34 @@ def _process_prefix_job(
                 )
                 break
 
+    missing_staged = _fail_missing_staged_files(job_uuid, present_indexes, claim_id)
+    if missing_staged:
+        logger.error(
+            "Accepted bulk uploads were missing from staging",
+            job_uuid=job_uuid,
+            failed_files=missing_staged,
+        )
+
     # Stash the breakdown so the UI can say "all 30 were duplicates"
     # instead of "30 skipped". Per-file outcomes go alongside so the
     # log-CSV endpoint can stream them back without another scan.
     with get_db_session() as session:
         row = session.execute(
-            select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
-        ).scalar_one()
+            select(BulkUploadJob).where(
+                BulkUploadJob.uuid == job_uuid,
+                BulkUploadJob.status == "processing",
+                BulkUploadJob.pipeline_claim_id == claim_id,
+            ).with_for_update()
+        ).scalar_one_or_none()
+        if row is None:
+            raise _LostBulkClaim("Bulk claim lost before summary commit")
         manifest = dict(row.manifest or {})
         manifest["process_summary"] = {
             "queued_for_pipeline": processed,
             "duplicates": duplicates,
             "other_skipped": other_skipped,
+            "failed": failed,
         }
-        manifest["file_log"] = file_log
         row.manifest = manifest
         row.skipped_files = duplicates + other_skipped
 
@@ -842,6 +1045,7 @@ def _process_prefix_job(
         queued_for_pipeline=processed,
         duplicates=duplicates,
         other_skipped=other_skipped,
+        failed=failed,
     )
 
 
@@ -854,6 +1058,8 @@ def _process_legacy_zip_job(
     staged_object_key: str,
     bulk_deployment_id: Optional[int] = None,
     use_profile: bool = False,
+    *,
+    claim_id: str,
 ) -> None:
     """
     Drain a pre-refactor bulk-upload job whose staged_object_key points
@@ -882,7 +1088,7 @@ def _process_legacy_zip_job(
                         result = _process_zip_entry(
                             info.filename, raw, camera_id, camera_storage_id,
                             gps_location, bulk_queue, job_id, bulk_deployment_id,
-                            use_profile,
+                            use_profile, source_index=idx - 1, claim_id=claim_id,
                         )
                 except _FileTimeout:
                     logger.warning(
@@ -898,6 +1104,29 @@ def _process_legacy_zip_job(
                     )
                     result = {"outcome": "skipped", "reason": "unexpected_error"}
 
+                source_index = idx - 1
+                if result["outcome"] == "processed":
+                    ledger_entry = {
+                        "outcome": "queued", "image_uuid": result.get("image_uuid"),
+                        "filename": info.filename,
+                    }
+                elif result["outcome"] == "duplicate":
+                    ledger_entry = {
+                        "outcome": "duplicate", "existing_uuid": result.get("existing_uuid"),
+                        "filename": info.filename,
+                    }
+                elif result["outcome"] == "failed":
+                    ledger_entry = {
+                        "outcome": "failed", "reason": result.get("reason"),
+                        "filename": info.filename,
+                    }
+                else:
+                    ledger_entry = {
+                        "outcome": "skipped", "reason": result.get("reason"),
+                        "filename": info.filename,
+                    }
+                _persist_file_outcome(job_uuid, source_index, ledger_entry, claim_id)
+
                 if result["outcome"] == "processed":
                     processed += 1
                 elif result["outcome"] == "duplicate":
@@ -909,7 +1138,7 @@ def _process_legacy_zip_job(
                     **result,
                 })
                 if idx % PROGRESS_PERSIST_EVERY == 0:
-                    _set_status(job_uuid, skipped_files=duplicates + other_skipped)
+                    _set_status(job_uuid, claim_id=claim_id, skipped_files=duplicates + other_skipped)
                     if is_bulk_job_cancelled(job_uuid):
                         logger.info(
                             "Bulk job cancelled, stopping legacy processing loop",
@@ -920,8 +1149,14 @@ def _process_legacy_zip_job(
 
         with get_db_session() as session:
             row = session.execute(
-                select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
-            ).scalar_one()
+                select(BulkUploadJob).where(
+                    BulkUploadJob.uuid == job_uuid,
+                    BulkUploadJob.status == "processing",
+                    BulkUploadJob.pipeline_claim_id == claim_id,
+                ).with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise _LostBulkClaim("Bulk claim lost before legacy summary commit")
             manifest = dict(row.manifest or {})
             manifest["process_summary"] = {
                 "queued_for_pipeline": processed,
@@ -933,7 +1168,9 @@ def _process_legacy_zip_job(
             row.skipped_files = duplicates + other_skipped
 
         try:
-            storage.delete_object(BUCKET_BULK_UPLOAD_STAGING, staged_object_key)
+            _delete_staged_object(job_uuid, claim_id, storage, staged_object_key)
+        except _LostBulkClaim:
+            raise
         except Exception as exc:
             logger.warning(
                 "Failed to delete legacy staged zip",
@@ -954,9 +1191,16 @@ def _process_job(job_uuid: str) -> None:
     the pipeline, marks status. Failure is captured at this level so
     no exception escapes to the queue consumer.
     """
+    claim_id = _claim_process_job(job_uuid)
+    if claim_id is None:
+        logger.info("Bulk upload delivery already claimed or complete", job_uuid=job_uuid)
+        return
     with get_db_session() as session:
         job = session.execute(
-            select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
+            select(BulkUploadJob).where(
+                BulkUploadJob.uuid == job_uuid,
+                BulkUploadJob.pipeline_claim_id == claim_id,
+            )
         ).scalar_one_or_none()
         if not job:
             logger.error("Bulk upload job not found", job_uuid=job_uuid)
@@ -965,6 +1209,8 @@ def _process_job(job_uuid: str) -> None:
         if not camera:
             job.status = "failed"
             job.error_message = "Target camera no longer exists"
+            job.pipeline_error = job.error_message
+            job.pipeline_claim_id = None
             job.finished_at = datetime.now(timezone.utc)
             return
         job_id = job.id
@@ -1002,7 +1248,6 @@ def _process_job(job_uuid: str) -> None:
         # The API flips status to 'processing' at finalize so users see
         # the right state during the brief queue hop; we still own
         # process_started_at since that drives the self-calibrating ETA.
-        job.status = "processing"
         job.process_started_at = datetime.now(timezone.utc)
 
     # Mode B pins every image to one deployment at the chosen site. The
@@ -1043,12 +1288,13 @@ def _process_job(job_uuid: str) -> None:
             _process_prefix_job(
                 job_uuid, job_id, camera_id, camera_storage_id,
                 gps_location, staged_object_key, bulk_deployment_id, use_profile,
-                time_offset_seconds,
+                time_offset_seconds, claim_id=claim_id,
             )
         else:
             _process_legacy_zip_job(
                 job_uuid, job_id, camera_id, camera_storage_id,
                 gps_location, staged_object_key, bulk_deployment_id, use_profile,
+                claim_id=claim_id,
             )
     except Exception as exc:
         logger.error(
@@ -1059,9 +1305,20 @@ def _process_job(job_uuid: str) -> None:
         )
         _set_status(
             job_uuid,
+            claim_id=claim_id,
             status="failed",
             error_message=str(exc),
             finished_at=datetime.now(timezone.utc),
+            pipeline_error=str(exc)[:1000],
+            pipeline_claim_id=None,
+        )
+    else:
+        # The stage is complete; image classification continues independently.
+        # Keep the original total_files and let periodic maintenance close the
+        # job only after every linked image has a terminal pipeline status.
+        _set_status(
+            job_uuid, claim_id=claim_id, staging_complete=True,
+            pipeline_claim_id=None, pipeline_error=None,
         )
 
 
@@ -1080,71 +1337,138 @@ def dispatch(message: dict) -> None:
         logger.error("Unknown bulk upload phase", phase=phase, job_uuid=job_uuid)
 
 
-def _recover_stuck_jobs() -> None:
-    """
-    Recover bulk-upload jobs that the previous worker run left in
-    'processing' status without finishing them. Happens whenever the
-    container is killed mid-pass: the Redis BLPOP message is gone, so
-    the job has no queue entry to drive it. Without this, the job
-    sits in 'processing' forever and the row's percent never closes.
-
-    Two cases:
-    - Staging still has objects under the job's prefix. Re-publish a
-      'process' message so the next BLPOP picks the job back up. The
-      per-image duplicate check makes re-runs idempotent.
-    - Staging is empty (worker finished iterating but never wrote the
-      end-of-pass summary, or staging was cleaned up out of band).
-      Align total_files with what actually classified so the lazy
-      auto-finalise in the API flips the row to 'done'.
-    """
-    storage = StorageClient()
+def _finalize_classified_jobs() -> int:
+    """Close completed jobs from durable image outcomes, without an API poll."""
+    finalized = 0
     with get_db_session() as session:
-        stuck = session.execute(
-            select(BulkUploadJob).where(BulkUploadJob.status == "processing")
+        jobs = session.execute(
+            select(BulkUploadJob)
+            .where(BulkUploadJob.status == "processing", BulkUploadJob.staging_complete.is_(True))
+            .with_for_update(skip_locked=True)
+            .limit(100)
         ).scalars().all()
-        stuck_snapshots = [
-            (j.id, j.uuid, j.staged_object_key, j.skipped_files) for j in stuck
-        ]
-
-    if not stuck_snapshots:
-        return
-
-    for job_id, job_uuid, staged_key, skipped in stuck_snapshots:
-        if not staged_key or not staged_key.endswith("/"):
-            # Legacy single-zip layout; the legacy path has different
-            # cleanup semantics and rarely sees restarts at this
-            # point, leave alone.
-            continue
-        keys = storage.list_objects(BUCKET_BULK_UPLOAD_STAGING, staged_key)
-        if keys:
-            logger.info(
-                "Recovering stuck bulk-upload job, re-publishing process message",
-                job_uuid=job_uuid,
-                staged_objects=len(keys),
+        for job in jobs:
+            counts = dict(session.execute(
+                select(Image.status, func.count(Image.id))
+                .where(Image.bulk_upload_job_id == job.id, Image.status.in_(("classified", "failed")))
+                .group_by(Image.status)
+            ).all())
+            ledger = ledger_from_manifest(job.manifest)
+            classified = counts.get("classified", 0)
+            failed_pipeline = counts.get("failed", 0)
+            queued = sum(bool(entry.get("image_uuid")) for entry in ledger.values())
+            duplicates = sum(entry.get("outcome") == "duplicate" for entry in ledger.values())
+            skipped = sum(entry.get("outcome") == "skipped" for entry in ledger.values())
+            upload_failed = sum(entry.get("outcome") == "failed_upload" for entry in ledger.values())
+            worker_failed = sum(
+                entry.get("outcome") == "failed" and not entry.get("image_uuid")
+                for entry in ledger.values()
             )
-            queue = RedisQueue(QUEUE_BULK_UPLOAD_JOB_PROCESS)
-            queue.publish({"job_uuid": job_uuid, "phase": "process"})
-            continue
+            missing = max(0, job.total_files - queued - duplicates - skipped - upload_failed - worker_failed)
+            pending = missing + max(0, queued - classified - failed_pipeline)
+            terminal = terminal_status({
+                "pending_files": pending,
+                "classified_files": classified,
+                "failed_files": failed_pipeline + upload_failed + worker_failed,
+                "duplicate_files": duplicates,
+                "skipped_files": skipped,
+            })
+            if terminal:
+                job.status = terminal
+                job.finished_at = datetime.now(timezone.utc)
+                finalized += 1
+        if finalized:
+            session.commit()
+    return finalized
 
-        # Nothing left to process. Align total_files with what made
-        # it into the Image table so the API auto-finalises the row.
-        with get_db_session() as session:
-            classified_count = session.execute(
-                select(func.count(Image.id)).where(
-                    Image.bulk_upload_job_id == job_id,
-                    Image.status.in_(("classified", "failed")),
-                )
-            ).scalar_one()
-            row = session.execute(
-                select(BulkUploadJob).where(BulkUploadJob.uuid == job_uuid)
-            ).scalar_one()
-            row.total_files = skipped + classified_count
-        logger.info(
-            "Recovered stuck bulk-upload job, total_files aligned for finalise",
-            job_uuid=job_uuid,
-            skipped=skipped,
-            classified=classified_count,
+
+def _recover_stuck_jobs() -> int:
+    """Periodically reclaim stale staging leases and publish one retry."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=JOB_LEASE_SECONDS)
+    snapshots = []
+    with get_db_session() as session:
+        stale = session.execute(
+            select(BulkUploadJob)
+            .where(
+                BulkUploadJob.status == "processing",
+                BulkUploadJob.staging_complete.is_(False),
+                BulkUploadJob.pipeline_updated_at < cutoff,
+            )
+            .with_for_update(skip_locked=True)
+            .limit(100)
+        ).scalars().all()
+        for job in stale:
+            if job.pipeline_attempts >= MAX_JOB_ATTEMPTS:
+                job.status = "failed"
+                job.error_message = "Bulk staging stopped after 3 attempts; retry this upload."
+                job.pipeline_error = job.error_message
+                job.pipeline_claim_id = None
+                job.finished_at = now
+            else:
+                job.pipeline_claim_id = None
+                job.pipeline_updated_at = now
+                snapshots.append((job.uuid, job.staged_object_key, now))
+        if stale:
+            session.commit()
+
+    published = 0
+    storage = StorageClient() if snapshots else None
+    for job_uuid, staged_key, recovery_time in snapshots:
+        keys = storage.list_objects(BUCKET_BULK_UPLOAD_STAGING, staged_key) if staged_key else []
+        if not keys:
+            ledger_complete = False
+            with get_db_session() as session:
+                job = session.execute(
+                    select(BulkUploadJob).where(
+                        BulkUploadJob.uuid == job_uuid,
+                        BulkUploadJob.status == "processing",
+                        BulkUploadJob.staging_complete.is_(False),
+                        BulkUploadJob.pipeline_claim_id.is_(None),
+                        BulkUploadJob.pipeline_updated_at == recovery_time,
+                    ).with_for_update()
+                ).scalar_one_or_none()
+                if job is None:
+                    continue
+                ledger = ledger_from_manifest(job.manifest)
+                resolved_indexes = {
+                    int(index) for index, entry in ledger.items()
+                    if index.isdigit() and (
+                        entry.get("image_uuid")
+                        or entry.get("outcome") in {
+                            "duplicate", "skipped", "failed", "failed_upload"
+                        }
+                    )
+                }
+                if job.total_files > 0 and len(resolved_indexes) >= job.total_files:
+                    # The worker drained staging and persisted every result,
+                    # then died before its completion marker. Resume pipeline
+                    # finalization from the durable ledger.
+                    job.staging_complete = True
+                    job.pipeline_error = None
+                    ledger_complete = True
+                else:
+                    missing_error = "Staged upload data is missing; retry this upload."
+                    job.status = "failed"
+                    job.error_message = missing_error
+                    job.pipeline_error = missing_error
+                    job.finished_at = datetime.now(timezone.utc)
+                session.commit()
+            if ledger_complete:
+                logger.info("Bulk staging ledger was complete; resuming image finalization", job_uuid=job_uuid)
+            else:
+                logger.error("Bulk upload staging objects are missing", job_uuid=job_uuid)
+            continue
+        RedisQueue(QUEUE_BULK_UPLOAD_JOB_PROCESS).publish(
+            {"job_uuid": job_uuid, "phase": "process"}
         )
+        published += 1
+    return published
+
+
+def _maintain_bulk_jobs() -> None:
+    _recover_stuck_jobs()
+    _finalize_classified_jobs()
 
 
 def main() -> None:
@@ -1168,7 +1492,8 @@ def main() -> None:
     priority = [QUEUE_BULK_UPLOAD_JOB_PROCESS, QUEUE_BULK_UPLOAD_JOB]
     logger.info("Listening on priority queues", queues=priority)
     queue.consume_forever_priority(
-        priority, dispatch, heartbeat_key=HEARTBEAT_KEY_BULK_UPLOAD
+        priority, dispatch, heartbeat_key=HEARTBEAT_KEY_BULK_UPLOAD,
+        maintenance_callback=_maintain_bulk_jobs,
     )
 
 

@@ -120,6 +120,7 @@ class RedisQueue:
         queues: list[str],
         callback: Callable[[dict], None],
         heartbeat_key: Optional[str] = None,
+        maintenance_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         """
         Consume from multiple queues in strict priority order.
@@ -146,6 +147,14 @@ class RedisQueue:
             heartbeat_key: Redis key to stamp each iteration, or None.
         """
         logger.info("Worker listening on priority queues", queues=queues)
+
+        def run_maintenance() -> None:
+            if maintenance_callback:
+                try:
+                    maintenance_callback()
+                except Exception as e:
+                    logger.error("Queue maintenance callback failed", error=str(e), exc_info=True)
+
         while True:
             try:
                 if heartbeat_key:
@@ -160,6 +169,7 @@ class RedisQueue:
                 self._reconnect()
                 continue
             if not result:
+                run_maintenance()
                 continue
             source_queue, raw = result
             try:
@@ -172,6 +182,8 @@ class RedisQueue:
                     error=str(e),
                     exc_info=True,
                 )
+            finally:
+                run_maintenance()
 
     def stamp_heartbeat(self, heartbeat_key: str) -> None:
         """

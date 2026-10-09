@@ -614,6 +614,7 @@ def create_image_record(
     content_hash: Optional[str] = None,
     bulk_upload_job_id: Optional[int] = None,
     deployment_id: Optional[int] = None,
+    db_session=None,
 ) -> str:
     """
     Create image record in database.
@@ -631,6 +632,8 @@ def create_image_record(
             notification suppression downstream (bulk skips species_detection).
         content_hash: Optional SHA-256 hex of raw bytes. Used by bulk upload
             to deduplicate re-imports of the same SD card.
+        db_session: Optional caller-owned transaction. When supplied, the image
+            is added and flushed but this helper does not commit or close it.
 
     Returns:
         Image UUID (string)
@@ -647,7 +650,7 @@ def create_image_record(
             image_uuid=image_uuid,
         )
 
-    with get_db_session() as session:
+    def add_image(session):
         image = Image(
             uuid=image_uuid,
             filename=filename,
@@ -677,6 +680,12 @@ def create_image_record(
             has_gps=bool(gps_location),
             has_thumbnail=bool(thumbnail_path)
         )
+
+    if db_session is not None:
+        add_image(db_session)
+    else:
+        with get_db_session() as session:
+            add_image(session)
 
     return image_uuid
 

@@ -10,9 +10,24 @@ CLIENT_FAILURE_REASONS = {"upload_failed", "request_too_large", "cancelled"}
 def ledger_from_manifest(manifest):
     """Return a detached index-keyed ledger, tolerating old manifest shapes."""
     ledger = (manifest or {}).get("upload_ledger") or {}
-    if not isinstance(ledger, dict):
-        return {}
-    return {str(key): dict(value) for key, value in ledger.items() if isinstance(value, dict)}
+    if isinstance(ledger, dict) and ledger:
+        return {str(key): dict(value) for key, value in ledger.items() if isinstance(value, dict)}
+    # Older completed imports retain per-file evidence in file_log. Reconcile
+    # it for display/recovery without rewriting their stored expected counts.
+    legacy = (manifest or {}).get("file_log") or []
+    recovered = {}
+    if isinstance(legacy, list):
+        for index, entry in enumerate(legacy):
+            if not isinstance(entry, dict):
+                continue
+            outcome = entry.get("outcome")
+            if outcome not in {"processed", "queued", "classified", "duplicate", "skipped", "failed"}:
+                continue
+            item = dict(entry)
+            item["outcome"] = "queued" if outcome == "processed" else outcome
+            item["accepted"] = True
+            recovered[str(index)] = item
+    return recovered
 
 
 def merge_ledger_entry(manifest, index, entry, *, protect_accepted=True):

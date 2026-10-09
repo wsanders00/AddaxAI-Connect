@@ -7,6 +7,12 @@ import os
 
 from shared.bulk_jobs import is_bulk_image_cancelled
 from shared.logger import get_logger, set_image_id
+from shared.pipeline_recovery import (
+    claim_image_stage,
+    fail_pipeline_stage,
+    maintain_image_lease,
+    reconcile_stale_images,
+)
 from shared.queue import (
     RedisQueue,
     QUEUE_DETECTION_COMPLETE,
@@ -89,6 +95,13 @@ def process_detection_complete(message: dict, classifier, taxonomy_map: dict[str
         logger.info("Skipping cancelled bulk image", image_uuid=image_uuid)
         return
 
+    claim_id = claim_image_stage(image_uuid, "detected", "classifying")
+    if not claim_id:
+        logger.info("Classification delivery already claimed or terminal", image_uuid=image_uuid)
+        return
+    lease = maintain_image_lease(image_uuid, "classifying", claim_id)
+    lease.__enter__()
+
     logger.info(
         "Processing classification request",
         image_uuid=image_uuid,
@@ -99,13 +112,10 @@ def process_detection_complete(message: dict, classifier, taxonomy_map: dict[str
     temp_files = []
 
     try:
-        # Step 1: Update status to classifying
-        update_image_status(image_uuid, "classifying")
-
         # If no detections, skip classification
         if num_detections == 0:
             logger.info("No detections to classify, skipping", image_uuid=image_uuid)
-            update_image_status(image_uuid, "classified")
+            update_image_status(image_uuid, "classified", claim_id)
             logger.info("Image processing complete (no detections)", image_uuid=image_uuid)
             return
 
@@ -121,7 +131,7 @@ def process_detection_complete(message: dict, classifier, taxonomy_map: dict[str
                 image_uuid=image_uuid,
                 num_detections=len(detections)
             )
-            update_image_status(image_uuid, "classified")
+            update_image_status(image_uuid, "classified", claim_id)
 
             # Check for above-threshold person/vehicle detections to send notifications
             from shared.database import get_db_session
@@ -271,15 +281,15 @@ def process_detection_complete(message: dict, classifier, taxonomy_map: dict[str
         )
 
         # Step 5: Insert classifications into database
-        classification_ids = insert_classifications(classifications)
+        classification_ids = insert_classifications(classifications, image_uuid, claim_id)
 
         # Step 6: Update image status to classified
-        update_image_status(image_uuid, "classified")
+        update_image_status(image_uuid, "classified", claim_id)
 
         # Step 6.5: Publish notification events for each unique species detected.
         # Suppressed for bulk uploads: an SD-card import would otherwise
         # fire thousands of stale species_detection alerts at once.
-        if classifications and not is_bulk:
+        if classification_ids and not is_bulk:
             try:
                 # Build detection confidence lookup for threshold filtering
                 detection_confidence = {d.detection_id: d.confidence for d in detections}
@@ -506,7 +516,7 @@ def process_detection_complete(message: dict, classifier, taxonomy_map: dict[str
     except Exception as e:
         # Update status to failed
         try:
-            update_image_status(image_uuid, "failed")
+            fail_pipeline_stage(image_uuid, "classifying", "classification", claim_id, e)
         except Exception as db_error:
             logger.error("Failed to update status to failed", error=str(db_error))
 
@@ -519,6 +529,7 @@ def process_detection_complete(message: dict, classifier, taxonomy_map: dict[str
         raise
 
     finally:
+        lease.__exit__(None, None, None)
         # Cleanup temporary files
         for temp_file in temp_files:
             try:
@@ -571,7 +582,8 @@ def main():
 
     logger.info("Listening for messages", queues=priority_queues)
     queue.consume_forever_priority(
-        priority_queues, handle_message, heartbeat_key=HEARTBEAT_KEY_CLASSIFICATION
+        priority_queues, handle_message, heartbeat_key=HEARTBEAT_KEY_CLASSIFICATION,
+        maintenance_callback=lambda: reconcile_stale_images("classification"),
     )
 
 
