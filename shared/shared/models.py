@@ -155,7 +155,7 @@ class CameraMaintenanceEvent(Base):
     bulk action. event_date is a plain Date, field visits are day-granular
     and need no timezone math (same reasoning as Camera.sim_expiry_date).
     action_types holds a non-empty list from a fixed vocabulary, validated
-    by the API (see routers/camera_maintenance.py). The derived
+    by the API (see routers/service.py). The derived
     max(event_date) per camera is shown as "last maintenance" in the
     camera list, detail sheet, and export.
     """
@@ -172,6 +172,33 @@ class CameraMaintenanceEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     # Who logged the event, distinct from who performed it.
     created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class CameraServiceTask(Base):
+    """
+    One planned service visit to a camera, open work only.
+
+    A row exists while the work is still to do. Completing it logs a
+    CameraMaintenanceEvent and deletes the row in one transaction, so the
+    service log stays the one history; cancelling deletes the row. There
+    is no status column: open is "the row exists", overdue is derived from
+    due_date against today in the server timezone. Same action vocabulary
+    as the service log (see routers/service.py).
+    """
+    __tablename__ = "camera_service_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    # e.g. ["vegetation_clearing"]
+    action_types = Column(JSON, nullable=False)
+    note = Column(Text, nullable=True)
+    # Optional deadline, a plain Date like event_date.
+    due_date = Column(Date, nullable=True, index=True)
+    # Optional, a member of the camera's project. SET NULL keeps the task
+    # when the user is deleted.
+    assigned_to_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class SiteGroup(Base):
@@ -416,6 +443,9 @@ class ProjectMembership(Base):
     # a non-empty list of site ids the viewer is restricted to. An empty
     # list is rejected by the API so one meaning has one form, the same
     # convention as DetectionAlertRule.site_ids. Always null for admins.
+    # One internal writer can leave [] behind: deleting a site removes its id
+    # from stored lists, and an emptied list means the viewer sees nothing
+    # (fail closed) until an admin re-scopes them.
     site_ids = Column(JSON, nullable=True)
     added_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -522,6 +552,9 @@ class DetectionAlertRule(Base):
     species = Column(JSON, nullable=True)
     # null means all sites of the project, else a non-empty list of site
     # ids. An empty list is rejected by the API so one meaning has one form.
+    # Deleting a site removes its id from stored lists; a list that empties
+    # stays [] and the rule is paused, so it shows as inactive instead of
+    # silently never firing.
     site_ids = Column(JSON, nullable=True)
     channels = Column(JSON, nullable=False)  # non-empty subset of ["email", "telegram"]
     # Optional conditions, null means the condition is off. The hour window
@@ -622,6 +655,8 @@ class TheftWatchRule(Base):
     sensitivity = Column(String(10), nullable=False)  # low | medium | high
     # null means all sites of the project, else a non-empty list of site
     # ids. An empty list is rejected by the API so one meaning has one form.
+    # Deleting a site removes its id from stored lists; a list that empties
+    # stays [] and the rule is paused, same as DetectionAlertRule.
     site_ids = Column(JSON, nullable=True)
     channels = Column(JSON, nullable=False)  # non-empty subset of ["email", "telegram"]
     is_active = Column(Boolean, nullable=False, server_default='true')
@@ -749,6 +784,11 @@ class BulkUploadJob(Base):
     # EXIF SerialNumber matches a registered camera. JSON, see
     # services/bulk-upload/worker.py for the shape.
     manifest = Column(JSON, nullable=True)
+    # Camera clock correction set by the uploader in the review step. The
+    # worker adds it to every EXIF capture time of the job; the raw EXIF
+    # stays in Image.image_metadata. The manifest's date_range is already
+    # corrected by the client, so the Mode B deployment dates match.
+    time_offset_seconds = Column(Integer, nullable=False, server_default="0")
     started_at = Column(DateTime(timezone=True), nullable=True)
     # Set when the worker starts the process phase (after user confirm).
     # Used by the frontend to derive a per-image processing rate that

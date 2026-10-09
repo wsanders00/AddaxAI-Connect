@@ -34,12 +34,12 @@ import { Button } from './ui/Button';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { CameraHealthHistoryChart } from './CameraHealthHistoryChart';
 import { CameraDeploymentHistory } from './CameraDeploymentHistory';
-import { CameraMaintenanceTab } from './CameraMaintenanceTab';
 import { CameraRejectionsTab } from './CameraRejectionsTab';
+import { ServiceSummaryRows } from './service/ServiceSummaryRows';
+import { TabStrip } from './ui/TabStrip';
 import { TagInput } from './TagInput';
 import { camerasApi, type UpdateCameraRequest } from '../api/cameras';
 import type { Camera } from '../api/types';
-import { cn } from '../lib/utils';
 import { formatDateTime } from '../utils/datetime';
 import { getSignalLabel } from '../utils/camera-colors';
 import { CameraStatusBadge } from './CameraStatusBadge';
@@ -58,7 +58,7 @@ interface CameraDetailSheetProps {
   onDeleteRequested?: (camera: { id: number; name: string }) => void;
 }
 
-type TabType = 'overview' | 'history' | 'deployments' | 'rejections' | 'maintenance' | 'details';
+type TabType = 'overview' | 'history' | 'deployments' | 'rejections' | 'details';
 
 export const CameraDetailSheet: React.FC<CameraDetailSheetProps> = ({
   camera,
@@ -258,20 +258,6 @@ export const CameraDetailSheet: React.FC<CameraDetailSheetProps> = ({
   };
 
   // Tab button helper
-  const TabButton = ({ tab, label }: { tab: TabType; label: string }) => (
-    <button
-      onClick={() => setActiveTab(tab)}
-      className={cn(
-        'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
-        activeTab === tab
-          ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground hover:text-foreground'
-      )}
-    >
-      {label}
-    </button>
-  );
-
   return (
     <>
       <Sheet open={isOpen} onOpenChange={onClose}>
@@ -285,14 +271,18 @@ export const CameraDetailSheet: React.FC<CameraDetailSheetProps> = ({
 
           <SheetBody className="space-y-6">
             {/* Tab navigation */}
-            <div className="flex flex-wrap border-b -mt-2">
-              <TabButton tab="overview" label="Overview" />
-              <TabButton tab="history" label="History" />
-              <TabButton tab="deployments" label="Placements" />
-              {camera.rejected_count_recent !== null && <TabButton tab="rejections" label="Rejected" />}
-              {canAdmin && <TabButton tab="maintenance" label="Service" />}
-              {canAdmin && <TabButton tab="details" label="Details" />}
-            </div>
+            <TabStrip<TabType>
+              className="-mt-2"
+              tabs={[
+                { key: 'overview', label: 'Overview' },
+                { key: 'history', label: 'History' },
+                { key: 'deployments', label: 'Placements' },
+                ...(camera.rejected_count_recent !== null ? [{ key: 'rejections' as const, label: 'Rejected' }] : []),
+                ...(canAdmin ? [{ key: 'details' as const, label: 'Details' }] : []),
+              ]}
+              value={activeTab}
+              onChange={setActiveTab}
+            />
 
             {/* Overview tab: key info (read by default, Edit toggles) then a read-only health card */}
             {activeTab === 'overview' && (
@@ -311,7 +301,7 @@ export const CameraDetailSheet: React.FC<CameraDetailSheetProps> = ({
                         Images
                       </Button>
                     )}
-                    {isServerAdmin && onDeleteRequested && (
+                    {canAdmin && onDeleteRequested && (
                       <Button
                         variant="outline"
                         className="text-destructive hover:text-destructive"
@@ -500,10 +490,14 @@ export const CameraDetailSheet: React.FC<CameraDetailSheetProps> = ({
                         : 'N/A'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Last service</span>
-                    <span>{camera.last_maintenance_date ?? '-'}</span>
-                  </div>
+                  {projectId != null && (
+                    <ServiceSummaryRows
+                      projectId={projectId}
+                      by="camera"
+                      id={camera.id}
+                      lastService={camera.last_maintenance_date}
+                    />
+                  )}
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Total images</span>
                     <span>{camera.total_images ?? 'N/A'}</span>
@@ -577,15 +571,10 @@ export const CameraDetailSheet: React.FC<CameraDetailSheetProps> = ({
               <CameraRejectionsTab cameraId={camera.id} isServerAdmin={isServerAdmin} />
             )}
 
-            {/* Service tab: log of field service visits (admins) */}
-            {activeTab === 'maintenance' && canAdmin && projectId != null && (
-              <CameraMaintenanceTab cameraId={camera.id} projectId={projectId} />
-            )}
-
             {/* Details tab: custom fields (admins). Read by default; Edit toggles the editor. */}
             {activeTab === 'details' && canAdmin && (
               <div>
-                {isEditing && isServerAdmin ? (
+                {isEditing ? (
                   <div className="space-y-3">
                     <label className="text-xs text-muted-foreground">Custom fields</label>
 

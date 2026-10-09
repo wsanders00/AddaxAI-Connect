@@ -27,6 +27,7 @@ import {
   TableRow,
 } from '../components/ui/Table';
 import { Button } from '../components/ui/Button';
+import { MapSelectButton, MapSelectDialog } from '../components/map/MapSelectDialog';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -60,7 +61,7 @@ import {
   filtersToSearchParams,
   type FilterSchema,
 } from '../lib/filter-url';
-import { useSearchParams } from 'react-router-dom';
+import { usePersistedFilterParams } from '../lib/use-persisted-filter-params';
 
 // Local type now that the old CameraFilters component is gone.
 type CameraFilterState = {
@@ -92,16 +93,15 @@ import { ColumnPicker } from '../components/ui/ColumnPicker';
 import { SortableHeader } from '../components/ui/SortableHeader';
 import { SelectAllCheckbox } from '../components/ui/SelectAllCheckbox';
 import { useBulkSelection } from '../hooks/useBulkSelection';
+import { BulkActionBar } from '../components/ui/BulkActionBar';
+import { PlanServiceDialog } from '../components/service/ServiceDialogs';
+import { usePlanService } from '../components/service/usePlanService';
 import {
   BulkAddTagsDialog,
   BulkRemoveTagsDialog,
   BulkSetSimExpiryDialog,
   BulkSetNotesDialog,
-  BulkLogMaintenanceDialog,
 } from '../components/BulkEditDialogs';
-import { projectsApi } from '../api/projects';
-import { useAuth } from '../hooks/useAuth';
-import type { LogMaintenanceRequest } from '../api/cameras';
 import { DeleteCamerasModal } from '../components/cameras/DeleteCamerasModal';
 import { CameraAttentionBar } from '../components/cameras/CameraAttentionBar';
 import { useToast } from '../components/ui/Toaster';
@@ -119,7 +119,7 @@ export const CamerasPage: React.FC = () => {
 
   // Filter and view-mode state live in the URL via FILTER_SCHEMA so the
   // bar, the chip row below it, and shareable links all agree.
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = usePersistedFilterParams('cameras', FILTER_SCHEMA);
 
   // Side panel state
   const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
@@ -140,7 +140,9 @@ export const CamerasPage: React.FC = () => {
   const [showBulkRemoveTags, setShowBulkRemoveTags] = useState(false);
   const [showBulkSetSimExpiry, setShowBulkSetSimExpiry] = useState(false);
   const [showBulkSetNotes, setShowBulkSetNotes] = useState(false);
-  const [showBulkLogMaintenance, setShowBulkLogMaintenance] = useState(false);
+  // Cameras to plan service for, a snapshot of the selection.
+  const [planCameraIds, setPlanCameraIds] = useState<number[] | null>(null);
+  const [showMapSelect, setShowMapSelect] = useState(false);
   const [showBulkDelete, setShowBulkDelete] = useState(false);
 
   // Add camera dialog state
@@ -236,8 +238,8 @@ export const CamerasPage: React.FC = () => {
   );
 
   // Keep the open detail sheet in sync with the list. The sheet holds a
-  // snapshot row, so derived fields (e.g. last maintenance after logging
-  // a visit on the Maintenance tab) would go stale after a refetch.
+  // snapshot row, so derived fields (e.g. last service after a visit is
+  // logged on the Service page) would go stale after a refetch.
   useEffect(() => {
     if (!selectedCamera || !cameras) return;
     const fresh = cameras.find((c) => c.id === selectedCamera.id);
@@ -308,12 +310,16 @@ export const CamerasPage: React.FC = () => {
     setShowBulkRemoveTags(false);
     setShowBulkSetSimExpiry(false);
     setShowBulkSetNotes(false);
-    setShowBulkLogMaintenance(false);
     toast.success(`Updated ${res.updated_count} camera${res.updated_count === 1 ? '' : 's'}`);
   };
   const onBulkError = (error: any) => {
     toast.error(`Bulk update failed: ${error.response?.data?.detail || error.message}`);
   };
+
+  const planMutation = usePlanService(currentProject?.id ?? 0, () => {
+    setPlanCameraIds(null);
+    clearCameraSelection();
+  });
 
   const bulkAddTagsMutation = useMutation({
     mutationFn: ({ ids, tags }: { ids: number[]; tags: string[] }) =>
@@ -339,24 +345,6 @@ export const CamerasPage: React.FC = () => {
     onSuccess: onBulkSuccess,
     onError: onBulkError,
   });
-  const bulkLogMaintenanceMutation = useMutation({
-    mutationFn: ({ ids, data }: { ids: number[]; data: LogMaintenanceRequest }) =>
-      camerasApi.bulkLogMaintenance(ids, data),
-    onSuccess: onBulkSuccess,
-    onError: onBulkError,
-  });
-
-  // Registered members for the bulk maintenance dialog's performed-by
-  // dropdown. The endpoint is admin-only, so only fetch for admins.
-  const { user: currentUser } = useAuth();
-  const { data: projectUsers } = useQuery({
-    queryKey: ['project-users', currentProject?.id],
-    queryFn: () => projectsApi.getUsers(currentProject!.id),
-    enabled: canAdminCurrentProject && currentProject !== null,
-  });
-  const maintenanceMembers = (projectUsers ?? [])
-    .filter((u): u is typeof u & { user_id: number } => u.is_registered && u.user_id !== null)
-    .map((u) => ({ user_id: u.user_id, email: u.email }));
 
   const resetAddForm = () => {
     setNewCameraDeviceId('');
@@ -937,7 +925,7 @@ export const CamerasPage: React.FC = () => {
               </span>
             )}
           </Button>
-          {isServerAdmin && (
+          {canAdminCurrentProject && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button className="whitespace-nowrap">
@@ -966,7 +954,7 @@ export const CamerasPage: React.FC = () => {
           with the dashboard so the thresholds cannot drift apart. */}
       <CameraAttentionBar cameras={cameras} onSelect={onFilterChange} />
 
-      {/* Shared filter bar (drives both table and map views) */}
+      {/* Shared filter bar */}
       {cameras && cameras.length > 0 && (
         <div className="space-y-3">
           <FilterBar
@@ -999,37 +987,34 @@ export const CamerasPage: React.FC = () => {
       )}
 
       {/* Bulk-action bar. Only renders for admins with at least one camera
-          selected. Sits between the toolbar and the table, same shape as
-          ManageImagesPage's bulk bar. */}
+          selected. Sits between the toolbar and the table, shared with the
+          sites and service tables. */}
       {canAdminCurrentProject && selectedCameraIds.size > 0 && cameras && cameras.length > 0 && (
-        <div className="flex items-center gap-3 p-3 mb-3 bg-muted rounded-md flex-wrap">
-          <span className="text-sm font-medium">
-            {selectedCameraIds.size} of {cameras.length} cameras selected
-          </span>
-          <div className="flex gap-2 flex-wrap ml-auto">
-            <Button variant="outline" size="sm" onClick={() => setShowBulkAddTags(true)}>
-              Add tags
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkRemoveTags(true)}>
-              Remove tags
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkSetSimExpiry(true)}>
-              Set SIM expiry
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkSetNotes(true)}>
-              Set notes
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkLogMaintenance(true)}>
-              Log service
-            </Button>
-            <Button variant="destructive" size="sm" onClick={() => setShowBulkDelete(true)}>
-              Delete
-            </Button>
-            <Button variant="ghost" size="sm" onClick={clearCameraSelection}>
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <BulkActionBar
+          selected={selectedCameraIds.size}
+          total={cameras.length}
+          noun="cameras"
+          onClear={clearCameraSelection}
+        >
+          <Button variant="outline" size="sm" onClick={() => setShowBulkAddTags(true)}>
+            Add tags
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowBulkRemoveTags(true)}>
+            Remove tags
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowBulkSetSimExpiry(true)}>
+            Set SIM expiry
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowBulkSetNotes(true)}>
+            Set notes
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setPlanCameraIds(Array.from(selectedCameraIds))}>
+            Plan service
+          </Button>
+          <Button variant="destructive" size="sm" onClick={() => setShowBulkDelete(true)}>
+            Delete
+          </Button>
+        </BulkActionBar>
       )}
 
       {/* Camera table */}
@@ -1045,13 +1030,17 @@ export const CamerasPage: React.FC = () => {
                 <TableHeader>
                   <TableRow>
                     {canAdminCurrentProject && (
-                      <TableHead className="w-10">
-                        <SelectAllCheckbox
-                          visibleIds={filteredCameras.map((c) => c.id)}
-                          selected={selectedCameraIds}
-                          onToggle={setCameraSelection}
-                          ariaLabel="Select all visible cameras"
-                        />
+                      <TableHead className="w-20">
+                        {/* Every way of selecting lives in this one cell. */}
+                        <div className="flex items-center gap-1">
+                          <MapSelectButton onClick={() => setShowMapSelect(true)} />
+                          <SelectAllCheckbox
+                            visibleIds={filteredCameras.map((c) => c.id)}
+                            selected={selectedCameraIds}
+                            onToggle={setCameraSelection}
+                            ariaLabel="Select all visible cameras"
+                          />
+                        </div>
                       </TableHead>
                     )}
                     {visibleColumnDefs.map((col) => (
@@ -1088,7 +1077,7 @@ export const CamerasPage: React.FC = () => {
                       onClick={() => handleRowClick(camera)}
                     >
                       {canAdminCurrentProject && (
-                        <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>
+                        <TableCell className="w-10 pl-12" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             aria-label={`Select camera ${camera.name}`}
@@ -1159,6 +1148,27 @@ export const CamerasPage: React.FC = () => {
       {/* Bulk-edit dialogs. Suggestions for the remove dialog come from
           tags currently on the selected cameras only, so the user cannot
           accidentally type a tag that no selected camera carries. */}
+      {/* Map selection, feeding the same bulk selection as the checkboxes.
+          It shows the rows the table shows, so filters narrow it too. The
+          position is the GPS of the camera's last health report, so cameras
+          that send no reports are listed as without a location. */}
+      <MapSelectDialog
+        open={showMapSelect}
+        onClose={() => setShowMapSelect(false)}
+        noun="camera"
+        items={filteredCameras.map((camera) => ({
+          id: camera.id,
+          label: camera.name,
+          latitude: camera.location?.lat ?? null,
+          longitude: camera.location?.lon ?? null,
+        }))}
+        initialSelected={selectedCameraIds}
+        onConfirm={(on, off) => {
+          setCameraSelection(off, false);
+          setCameraSelection(on, true);
+        }}
+      />
+
       <BulkAddTagsDialog
         open={showBulkAddTags}
         onClose={() => setShowBulkAddTags(false)}
@@ -1197,6 +1207,16 @@ export const CamerasPage: React.FC = () => {
           bulkSetSimExpiryMutation.mutate({ ids: Array.from(selectedCameraIds), date })
         }
       />
+      {currentProject && (
+        <PlanServiceDialog
+          open={planCameraIds !== null}
+          onClose={() => setPlanCameraIds(null)}
+          projectId={currentProject.id}
+          initialCameraIds={planCameraIds ?? undefined}
+          isPending={planMutation.isPending}
+          onConfirm={(cameraIds, fields) => planMutation.mutate({ cameraIds, fields })}
+        />
+      )}
       <BulkSetNotesDialog
         open={showBulkSetNotes}
         onClose={() => setShowBulkSetNotes(false)}
@@ -1207,18 +1227,6 @@ export const CamerasPage: React.FC = () => {
           bulkSetNotesMutation.mutate({ ids: Array.from(selectedCameraIds), notes })
         }
       />
-      <BulkLogMaintenanceDialog
-        open={showBulkLogMaintenance}
-        onClose={() => setShowBulkLogMaintenance(false)}
-        count={selectedCameraIds.size}
-        noun="camera"
-        isPending={bulkLogMaintenanceMutation.isPending}
-        members={maintenanceMembers}
-        currentUserId={currentUser?.id}
-        onConfirm={(data) =>
-          bulkLogMaintenanceMutation.mutate({ ids: Array.from(selectedCameraIds), data })
-        }
-      />
 
       <DeleteCamerasModal
         open={showBulkDelete}
@@ -1227,8 +1235,8 @@ export const CamerasPage: React.FC = () => {
         onDeleted={clearCameraSelection}
       />
 
-      {/* Add Camera Dialog (server admins only) */}
-      {isServerAdmin && (
+      {/* Add Camera Dialog (project admins) */}
+      {canAdminCurrentProject && (
         <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
           <DialogContent onClose={() => setShowAddDialog(false)}>
             <DialogHeader>
@@ -1252,7 +1260,7 @@ export const CamerasPage: React.FC = () => {
                   placeholder="e.g., 860946063660255"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Unique camera identifier (IMEI, serial number, or custom ID)
+                  Must exactly match the identifier the camera sends, usually the IMEI or serial number
                 </p>
               </div>
 
@@ -1364,8 +1372,8 @@ export const CamerasPage: React.FC = () => {
         </Dialog>
       )}
 
-      {/* CSV Import Dialog (server admins only) */}
-      {isServerAdmin && (
+      {/* CSV Import Dialog (project admins) */}
+      {canAdminCurrentProject && (
         <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
           <DialogContent onClose={() => setShowImportDialog(false)} className="max-w-4xl">
             <DialogHeader>
@@ -1382,7 +1390,7 @@ export const CamerasPage: React.FC = () => {
                     <div className="grid grid-cols-[1fr,1.2fr] gap-x-4 items-start">
                       <div>
                         <p className="text-sm font-medium">All you need is a list of camera IDs</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">A camera ID is any unique identifier per camera (e.g. IMEI, serial number, or custom label).</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">A camera ID must exactly match the identifier the camera sends, usually the IMEI or serial number.</p>
                       </div>
                       <pre className="text-[11px] leading-relaxed bg-background p-2 rounded overflow-x-auto">
 {`CameraID
@@ -1395,15 +1403,15 @@ export const CamerasPage: React.FC = () => {
 
                     <div className="grid grid-cols-[1fr,1.2fr] gap-x-4 items-start">
                       <div>
-                        <p className="text-sm font-medium">Optionally add a name, notes, or SIM expiry</p>
+                        <p className="text-sm font-medium">Optionally add notes or a SIM expiry</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          Add <code className="bg-background px-1 rounded">Name</code>, <code className="bg-background px-1 rounded">Notes</code>, or <code className="bg-background px-1 rounded">SimExpiryDate</code> columns. Empty names default to the camera ID. SIM expiry dates use <code className="bg-background px-1 rounded">YYYY-MM-DD</code>.
+                          Add <code className="bg-background px-1 rounded">Notes</code> or <code className="bg-background px-1 rounded">SimExpiryDate</code> columns. SIM expiry dates use <code className="bg-background px-1 rounded">YYYY-MM-DD</code>.
                         </p>
                       </div>
                       <pre className="text-[11px] leading-relaxed bg-background p-2 rounded overflow-x-auto">
-{`CameraID,Name,Notes,SimExpiryDate
-860946063660255,,,
-860946063660256,Camera north,Oak tree,2026-12-15`}
+{`CameraID,Notes,SimExpiryDate
+860946063660255,,
+860946063660256,Oak tree,2026-12-15`}
                       </pre>
                     </div>
 
@@ -1415,9 +1423,9 @@ export const CamerasPage: React.FC = () => {
                         <p className="text-xs text-muted-foreground mt-0.5">Extra columns are stored as custom fields. Not used by the system but searchable.</p>
                       </div>
                       <pre className="text-[11px] leading-relaxed bg-background p-2 rounded overflow-x-auto">
-{`CameraID,Name,Notes,Habitat,Mounted on
-860946063660255,,,,
-860946063660256,Camera north,Near stream,Wetland,Pole`}
+{`CameraID,Notes,Habitat,Mounted on
+860946063660255,,,
+860946063660256,Near stream,Wetland,Pole`}
                       </pre>
                     </div>
                   </div>

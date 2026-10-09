@@ -33,7 +33,7 @@ WITH raw_obs AS (
     FROM human_observations ho
     JOIN images i ON ho.image_id = i.id
     JOIN cameras c ON i.camera_id = c.id
-    WHERE {verified_scope} AND c.project_id = ANY(:project_ids)
+    WHERE {verified_scope} AND c.project_id = ANY(:project_ids) AND i.is_hidden = FALSE
       {verified_filters}{unverified_branches}
 ),
 -- Per-image: sum all detections of same species in same image
@@ -105,7 +105,7 @@ _UNVERIFIED_BRANCHES = """
     JOIN images i ON d.image_id = i.id
     JOIN cameras c ON i.camera_id = c.id
     JOIN projects p ON c.project_id = p.id
-    WHERE {ai_scope} AND c.project_id = ANY(:project_ids)
+    WHERE {ai_scope} AND c.project_id = ANY(:project_ids) AND i.is_hidden = FALSE
       AND d.confidence >= p.detection_threshold
       AND {classification_filter}
       {unverified_filters}
@@ -116,7 +116,7 @@ _UNVERIFIED_BRANCHES = """
     JOIN images i ON d.image_id = i.id
     JOIN cameras c ON i.camera_id = c.id
     JOIN projects p ON c.project_id = p.id
-    WHERE {ai_scope} AND c.project_id = ANY(:project_ids)
+    WHERE {ai_scope} AND c.project_id = ANY(:project_ids) AND i.is_hidden = FALSE
       AND d.category IN ('person', 'vehicle')
       AND d.confidence >= p.detection_threshold
       {pv_filters}"""
@@ -563,14 +563,14 @@ async def compute_event_assignments(
 
     Images with multiple species get multiple entries keyed by (uuid, species).
     """
+    # The shared builder fills the CTE template, so a new slot in it cannot
+    # break this query again.
+    cte_sql, _ = _build_cte()
     params = {"project_ids": [project_id], "interval": interval_minutes}
 
     # Extended CTE that also returns per-image info needed for export
     query = f"""
-    {_INDEPENDENCE_CTE.format(
-        verified_filters="",
-        unverified_branches=_build_unverified_branches("", ""),
-    )}
+    {cte_sql}
     , event_boundaries AS (
         SELECT pool_id, species, event_id,
                MIN(ts) as event_start,

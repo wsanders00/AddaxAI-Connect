@@ -15,6 +15,19 @@ export interface PerformanceAggregateRow {
   diff: number;
 }
 
+export interface PerformanceSiteRow {
+  /** Null when the image's deployment has no site */
+  site_id: number | null;
+  site_name: string;
+  verified_images: number;
+  subjects: number;
+  /** Diagonal share of the site's paired subjects, like matrix_accuracy */
+  accuracy: number;
+  /** Verified images where the validator recorded nothing */
+  empty_images: number;
+  empty_rate: number;
+}
+
 export interface PerformanceData {
   total_verified_images: number;
   aggregate: PerformanceAggregateRow[];
@@ -26,6 +39,7 @@ export interface PerformanceData {
   matrix_accuracy: number;
   /** Total cells in the matrix, one per paired subject */
   matrix_subjects: number;
+  by_site: PerformanceSiteRow[];
 }
 
 export interface PerformanceFilters {
@@ -37,7 +51,45 @@ export interface PerformanceFilters {
   end_date?: string;
 }
 
+export interface ThresholdCheckStep {
+  threshold: number;
+  /** Null when nothing passes this threshold */
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
+}
+
+export interface ThresholdCheckData {
+  mode: 'detection' | 'default' | 'species';
+  /** Set in species mode only */
+  species: string | null;
+  verified_images: number;
+  /** True subjects scored, the same at every step */
+  support: number;
+  min_support: number;
+  steps: ThresholdCheckStep[];
+  /** Null below min_support. Equals the current value when that is
+   * already within a point of the best F1, else the near-best step closest
+   * to it. */
+  suggested: number | null;
+}
+
 export const performanceApi = {
+  /** Scores at each threshold on all verified images, admin only. species
+   * goes with species mode only. */
+  thresholdCheck: async (
+    projectId: number,
+    mode: ThresholdCheckData['mode'],
+    current: number,
+    species?: string,
+  ): Promise<ThresholdCheckData> => {
+    const response = await apiClient.get<ThresholdCheckData>(
+      '/api/statistics/threshold-check',
+      { params: { project_id: projectId, mode, current, species } },
+    );
+    return response.data;
+  },
+
   get: async (
     projectId: number,
     filters?: PerformanceFilters,

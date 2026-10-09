@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../componen
 import { MultiSelect, Option } from '../../components/ui/MultiSelect';
 import { SiteGroupsModal } from '../../components/SiteGroupsModal';
 import { ClassificationThresholdsModal } from '../../components/ClassificationThresholdsModal';
+import { ThresholdCheckButton, ThresholdCheckDialog } from '../../components/ThresholdCheckDialog';
 import { useProject } from '../../contexts/ProjectContext';
 import { adminApi } from '../../api/admin';
 import { projectsApi } from '../../api/projects';
@@ -64,6 +65,7 @@ export const ProjectSettingsPage: React.FC = () => {
     currentProject?.classification_thresholds?.overrides ?? {},
   );
   const [showClassificationOverridesModal, setShowClassificationOverridesModal] = useState(false);
+  const overrideCount = Object.keys(classificationOverrides).length;
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -76,6 +78,8 @@ export const ProjectSettingsPage: React.FC = () => {
   const [showChangesModal, setShowChangesModal] = useState(false);
   const [modalData, setModalData] = useState<ModalData | null>(null);
   const [showThresholdBreakdown, setShowThresholdBreakdown] = useState(false);
+  const [showDetectionCheck, setShowDetectionCheck] = useState(false);
+  const [showDefaultCheck, setShowDefaultCheck] = useState(false);
   const [showIndependenceBreakdown, setShowIndependenceBreakdown] = useState(false);
   const [showEventBreakdown, setShowEventBreakdown] = useState(false);
 
@@ -447,6 +451,18 @@ export const ProjectSettingsPage: React.FC = () => {
               <span className="text-sm font-medium w-12 text-right">
                 {(threshold * 100).toFixed(0)}%
               </span>
+              <ThresholdCheckButton
+                onClick={() => setShowDetectionCheck(true)}
+                disabled={isSaving}
+              />
+              <ThresholdCheckDialog
+                open={showDetectionCheck}
+                onClose={() => setShowDetectionCheck(false)}
+                projectId={currentProject.id}
+                target={{ mode: 'detection' }}
+                current={threshold}
+                onApply={setThreshold}
+              />
             </div>
           </div>
 
@@ -459,39 +475,49 @@ export const ProjectSettingsPage: React.FC = () => {
                 Classification confidence threshold
               </label>
               <p className="text-sm text-muted-foreground mt-1">
-                Hide species predictions below this confidence. Use the per-species overrides to filter noisy species.
-              </p>
-            </div>
-            <div className="flex-1 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-              <div className="w-full flex items-center gap-3 sm:flex-[2]">
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={classificationDefault}
-                  onChange={(e) => setClassificationDefault(parseFloat(e.target.value))}
-                  className="flex-1 h-2 rounded-lg appearance-none cursor-pointer"
-                  style={{
-                    background: `linear-gradient(to right, #0f6064 0%, #0f6064 ${classificationDefault * 100}%, #e1eceb ${classificationDefault * 100}%, #e1eceb 100%)`,
-                  }}
-                  disabled={isSaving}
-                />
-                <span className="text-sm font-medium w-12 text-right">
-                  {(classificationDefault * 100).toFixed(0)}%
-                </span>
-              </div>
-              <div className="w-full flex sm:flex-1 sm:justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
+                Hide species predictions below this confidence. Use the{' '}
+                {/* A button, not a link: it opens a modal, no navigation. */}
+                <button
+                  type="button"
                   onClick={() => setShowClassificationOverridesModal(true)}
                   disabled={isSaving}
-                  className="w-full whitespace-nowrap"
+                  className="text-primary underline underline-offset-2 hover:text-primary/80 disabled:opacity-50"
                 >
-                  Set overrides
-                </Button>
-              </div>
+                  per-species overrides
+                  {overrideCount > 0 && ` (${overrideCount} set)`}
+                </button>{' '}
+                to filter noisy species.
+              </p>
+            </div>
+            <div className="flex-1 flex items-center gap-3">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={classificationDefault}
+                onChange={(e) => setClassificationDefault(parseFloat(e.target.value))}
+                className="flex-1 h-2 rounded-lg appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #0f6064 0%, #0f6064 ${classificationDefault * 100}%, #e1eceb ${classificationDefault * 100}%, #e1eceb 100%)`,
+                }}
+                disabled={isSaving}
+              />
+              <span className="text-sm font-medium w-12 text-right">
+                {(classificationDefault * 100).toFixed(0)}%
+              </span>
+              <ThresholdCheckButton
+                onClick={() => setShowDefaultCheck(true)}
+                disabled={isSaving}
+              />
+              <ThresholdCheckDialog
+                open={showDefaultCheck}
+                onClose={() => setShowDefaultCheck(false)}
+                projectId={currentProject.id}
+                target={{ mode: 'default' }}
+                current={classificationDefault}
+                onApply={setClassificationDefault}
+              />
             </div>
           </div>
 

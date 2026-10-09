@@ -17,8 +17,8 @@
 ## Role-based access control
 
 Three-tier system:
-- **server-admin** has full access to all projects, can create projects and manage all users
-- **project-admin** manages specific projects, can invite users to their projects
+- **server-admin** has full access to all projects and manages all users
+- **project-admin** manages specific projects, can invite users to their projects, and can create a new project (becoming its admin); deleting a project stays server-admin only
 - **project-viewer** has read-only access to specific projects
 
 Users can have different roles in different projects (e.g., admin of Project A, viewer of Project B).
@@ -148,6 +148,9 @@ addaxai-connect/
 │   │   ├── worker.py                  # Entry point (posts the observation, attaches a thumbnail)
 │   │   └── db_operations.py           # Log status and integration health
 │   │
+│   ├── minio/                         # MinIO server and mc, built from source
+│   │   └── Dockerfile
+│   │
 │   ├── minio-init/                    # One-shot MinIO bootstrap (buckets, ILM rules)
 │   │   └── entrypoint.sh
 │   │
@@ -175,9 +178,9 @@ addaxai-connect/
 │   │   ├── routers/                   # API route handlers
 │   │   │   ├── admin.py               # Server admin endpoints
 │   │   │   ├── cameras.py             # Camera CRUD
-│   │   │   ├── camera_maintenance.py  # Camera maintenance event log
 │   │   │   ├── site_groups.py         # Merged sites (site groups) for the independence interval
 │   │   │   ├── camera_reference_images.py # Reference images per camera
+│   │   │   ├── service.py             # Service visits (the log) and planned service tasks
 │   │   │   ├── sites.py               # Site CRUD
 │   │   │   ├── deployments.py         # Deployment list and escape-hatch reassign
 │   │   │   ├── feed.py                # Camera updates feed (list, resolve, seen)
@@ -375,6 +378,28 @@ Queue names (defined in `shared/shared/queue.py`):
 - **`speciesnet`** is the full stack with SpeciesNet classifier (2,498 global species)
 - **`demo`** runs only the API, database, and frontend (no ML workers)
 
+## MinIO image
+
+MinIO stopped publishing images in 2025 and deleted `minio/minio` and
+`minio/mc` from Docker Hub on 11 Sep 2026, so a fresh deploy could no longer
+pull them. `services/minio/Dockerfile` builds both binaries from the Go
+module proxy instead, at the exact commits every server ran from the old
+image: minio `RELEASE.2025-09-07T16-13-09Z` and mc
+`RELEASE.2025-08-13T08-35-41Z`. One image, `addaxai-connect-minio`, serves
+both `minio` and `minio-init`.
+
+- **Cost.** The compile takes about 6.5 minutes on a 2 vCPU server and peaks
+  at about 1.1 GB of real memory (`GOFLAGS=-p=1` and `GOMEMLIMIT` keep it
+  there). It runs on the first update to this image and again after the
+  weekly `docker builder prune`, the same as the Python services.
+- **Bumping.** Change the `ARG`s in the Dockerfile and the two version greps
+  in `.github/workflows/minio-image.yml`. A new minio is a storage upgrade:
+  run the full dev check on restored production data. A new mc must be
+  checked against `services/minio-init/entrypoint.sh` on a server with the
+  cold tier on, because a newer mc once broke the tier detection.
+- **Rollback.** Tags before v0.13.1 reference the deleted image names. The
+  retag step in `docs/update-guide.md` puts them back.
+
 ## GPU inference
 
 Off by default. One boolean in `host_vars`, `use_gpu`, and everything
@@ -452,6 +477,20 @@ Rules:
 - Never reintroduce `AT TIME ZONE 'UTC'` on these columns, that was a fix-on-read hack for the pre-refactor mistagged-UTC storage and is gone.
 - When serializing a camera-clock value to ISO 8601, localize first with `.replace(tzinfo=ZoneInfo(server_tz))` so the output carries the correct DST-aware offset.
 - Server wall-clock filters stay aware UTC as before.
+
+One deliberate exception: a bulk upload can correct a wrong camera clock.
+The uploader sets the offset in the review step (`ClockOffsetDialog`,
+ported from the desktop AddaxAI), it is stored as
+`bulk_upload_jobs.time_offset_seconds`, and the worker adds it to every
+EXIF capture time through `get_corrected_datetime` in
+`services/ingestion/exif_parser.py`, before the image row and its
+deployment are written. The raw EXIF stays in `Image.image_metadata`. The
+browser shifts its scan once (`shiftEntries` in
+`services/frontend/src/utils/clock-offset.ts`), so the manifest date range
+(the Mode B deployment dates), the duplicate pre-check and the resume
+check all use corrected time too. Offset arithmetic runs on the naive wall
+clock, never through the browser's timezone, or a summer time switch moves
+the result an hour. There is no correction after import.
 
 ## Outbound integrations
 
@@ -640,6 +679,34 @@ the table; nothing scans the filesystem at read time.
   `cleanup_old_rejected_files` (`services/ingestion/main.py`). Every count
   is therefore "within the last 30 days" without a parameter.
 
+## Service tasks and visits
+
+Two tables, one history. `camera_maintenance_events` is the service log
+(a visit: date, actions, performer, note). `camera_service_tasks` holds
+open work only. Completing a task inserts the visit and deletes the task
+in one commit; cancelling deletes it. There is no status column: open
+means the row exists, overdue is derived on read (`is_overdue`, due date
+before today in the server timezone). Everything lives in
+`services/api/routers/service.py`, project scoped under
+`/api/projects/{id}/service-visits` and `/service-tasks`, so one
+`camera.project_id == project_id` check covers access and membership.
+User docs: `docs/service.md`.
+
+- Stored per camera, shown by site. A visit's site is the newest
+  deployment that started on or before its date (end dates ignored, a
+  bulk-upload deployment ends at its last photo while the camera stays),
+  a task's site is the camera's current site. Both come from `site_of_camera` in
+  `utils/site_scope.py`, which is also what the viewer scope filters on,
+  so a row without a site is invisible to a restricted viewer.
+- Every member reads, admins write. The frontend has one place to act,
+  the Service page; the camera and site slide-outs only summarise
+  (`ServiceSummaryRows`) and link there.
+- The action vocabulary is `ACTION_LABELS` in `service.py`, mirrored in
+  `services/frontend/src/lib/service-actions.ts` and pinned by
+  `tests/api/test_service.py`.
+- The assignment email is sent by the API after the commit, best effort,
+  one per request, never to yourself (`_email_assignee`).
+
 ## Worker liveness
 
 Every long-running worker proves it is alive by stamping a Redis key with
@@ -778,8 +845,8 @@ How to see and verify UI changes in a real browser without deploying to a server
 
    ```
    VITE_PROXY_TARGET=https://dev.addaxai.com
-   SWEEP_EMAIL=<test account email>
-   SWEEP_PASSWORD=<test account password>
+   SWEEP_EMAIL=<server-admin email on the dev server>
+   SWEEP_PASSWORD=<its password>
    ```
 
 2. Run the frontend locally:
@@ -794,7 +861,7 @@ How to see and verify UI changes in a real browser without deploying to a server
 
 Without `VITE_PROXY_TARGET` the proxy falls back to the docker-internal API, so container builds behave exactly as before. Auth is a bearer token in localStorage, so nothing cookie-related needs configuring.
 
-The test account is a dedicated server-admin account on the dev server, invited via the User Assignment page. Do not put personal credentials in `.env.local`.
+There is no standing test account. Every restore replaces dev's users, so whatever account `SWEEP_*` names has usually vanished; check the login works before a sweep and invite a server-admin account again when it does not. The `SWEEP_*` values are only for the sweep script. For anything visual outside the sweep, log in yourself in the browser.
 
 ### Screenshot sweep
 

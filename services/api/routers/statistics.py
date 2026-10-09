@@ -2,7 +2,7 @@
 Statistics endpoints for dashboard metrics and charts.
 """
 import asyncio
-from typing import List, Optional, Any, Dict, Tuple
+from typing import List, Literal, Optional, Any, Dict, Tuple
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import select, func, and_, desc, text, exists
 from pydantic import BaseModel
 
-from shared.models import User, Image, Camera, Detection, Classification, Project, HumanObservation, ServerSettings, Deployment
+from shared.models import User, Image, Camera, Detection, Classification, Project, HumanObservation, ServerSettings, Deployment, Site
 from shared.classification_threshold import (
     classification_passes_threshold,
     CLASSIFICATION_THRESHOLD_FILTER_SQL,
@@ -21,6 +21,7 @@ from shared.classification_threshold import (
 from shared.database import get_async_session
 from shared.label_source import DEFAULT_LABEL_SOURCE, LabelSource, label_scope
 from auth.users import current_verified_user
+from auth.permissions import require_project_admin_access
 from auth.project_access import (
     get_accessible_project_ids,
     narrow_to_project,
@@ -57,7 +58,7 @@ from utils.sun_time import (
     reference_date_for_sun,
     transform_to_sun_time,
 )
-from utils.performance_pairing import pair_image_labels
+from utils.performance_pairing import EMPTY, pair_image_labels
 from utils.site_scope import site_image_clause, cameras_at_sites_clause, intersect_scope
 from utils.detection_filtering import (
     has_visible_animal,
@@ -555,7 +556,9 @@ def pool_map_rows(rows, indep_counts: Optional[dict] = None) -> dict:
             deployments[row.deployment_id] = d
         if row.species is not None and row.detection_count > 0:
             key = row.species.lower()
-            d["species_counts"][key] = d["species_counts"].get(key, 0) + row.detection_count
+            # int() because SUM() arrives as Decimal, which Pydantic coerces
+            # on the map endpoint but json.dumps in the spatial export does not.
+            d["species_counts"][key] = d["species_counts"].get(key, 0) + int(row.detection_count)
 
     # Pass 2: pool deployments into site buckets
     buckets: dict = {}
@@ -600,68 +603,27 @@ def pool_map_rows(rows, indep_counts: Optional[dict] = None) -> dict:
     return buckets
 
 
-@router.get(
-    "/detection-rate-map",
-    response_model=DetectionRateMapResponse,
-)
-async def get_detection_rate_map(
-    project_id: Optional[int] = Query(None, description="Filter to a single project"),
-    species: Optional[str] = Query(
-        None,
-        description=(
-            "Comma-separated species (case-insensitive). Several species "
-            "combine their counts into one abundance."
-        ),
-    ),
-    start_date: Optional[date] = Query(None, description="Filter detections from this date (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="Filter detections to this date (YYYY-MM-DD)"),
-    site_ids: Optional[str] = Query(None, description="Comma-separated site IDs"),
-    source: LabelSource = _source_param(),
-    accessible_project_ids: List[int] = Depends(get_accessible_project_ids),
-    db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(current_verified_user),
-):
+async def fetch_site_buckets(
+    db: AsyncSession,
+    project_ids: List[int],
+    site_id_list: Optional[List[int]],
+    project_id: Optional[int],
+    source: LabelSource = DEFAULT_LABEL_SOURCE,
+    species_list: Optional[List[str]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> dict:
     """
-    Get detection rate map data as GeoJSON.
+    One bucket per site at the site location: pooled trap days, deployment
+    count, and per-species detection counts under the label source, with the
+    thresholds and the independence interval applied. See pool_map_rows for
+    the bucket shape.
 
-    Returns one point per SITE with its pooled detection rate (detections per
-    trap-day). Each site's deployments are summed together, so a place with
-    several deployments (relocations, or more than one camera) is a single point
-    instead of overlapping points. Deployments with no site are excluded.
-
-    Filtering:
-    - Automatically filtered by user's accessible projects
-    - Optional species filter (comma-separated, case-insensitive; several
-      species sum their counts into a combined abundance)
-    - Optional date range filter (applies to detection dates)
-    - Respects project detection thresholds
-
-    Detection rate calculation:
-    - detections = count of detections in deployment period (optionally filtered by species/dates)
-    - trap_days = end_date - start_date + 1 (or today - start_date + 1 for active deployments)
-    - detection_rate = detections / trap_days
-    - Shows 0.0 for deployments with no detections
-
-    Args:
-        species: Filter by species name (optional, case-insensitive)
-        start_date: Filter detections from date (optional, YYYY-MM-DD)
-        end_date: Filter detections to date (optional, YYYY-MM-DD)
-        accessible_project_ids: Project IDs accessible to user
-        db: Database session
-        current_user: Current authenticated user
-
-    Returns:
-        GeoJSON FeatureCollection with deployment features
+    Shared by the detection rate map and the spatial export, so the two
+    always report the same numbers.
     """
-    accessible_project_ids = narrow_to_project(accessible_project_ids, project_id)
     interval = await _get_independence_interval(db, project_id)
-    site_id_list = await _scoped_site_ids(current_user, project_id, db, site_ids)
     scope = label_scope(source)
-    # Lowercased list for the = ANY comparisons below. Several species merge
-    # their counts, which is the combined-abundance behaviour of the map.
-    species_list = (
-        [s.strip().lower() for s in species.split(',') if s.strip()] if species else None
-    ) or None
 
     # Build SQL query with conditional filters
     # Use UNION to combine verified (human observations) and unverified (AI) counts
@@ -686,6 +648,7 @@ async def get_detection_rate_map(
             LEFT JOIN images i ON
                 i.camera_id = cdp.camera_id
                 AND {verified_scope}
+                AND i.is_hidden = FALSE
                 -- Half-open range on the raw timestamp rather than casting
                 -- every row to a date. Same rows, one less conversion per
                 -- image, and there are three of these joins over 58k images.
@@ -722,6 +685,7 @@ async def get_detection_rate_map(
             LEFT JOIN images i ON
                 i.camera_id = cdp.camera_id
                 AND {ai_scope}
+                AND i.is_hidden = FALSE
                 -- Half-open range on the raw timestamp rather than casting
                 -- every row to a date. Same rows, one less conversion per
                 -- image, and there are three of these joins over 58k images.
@@ -752,6 +716,7 @@ async def get_detection_rate_map(
             LEFT JOIN images i ON
                 i.camera_id = cdp.camera_id
                 AND {ai_scope}
+                AND i.is_hidden = FALSE
                 -- Half-open range on the raw timestamp rather than casting
                 -- every row to a date. Same rows, one less conversion per
                 -- image, and there are three of these joins over 58k images.
@@ -835,7 +800,7 @@ async def get_detection_rate_map(
             "species_list": species_list,
             "start_date": start_date,
             "end_date": end_date,
-            "project_ids": accessible_project_ids,
+            "project_ids": project_ids,
             "site_ids": site_id_list,
         }
     )
@@ -848,7 +813,7 @@ async def get_detection_rate_map(
         end_dt = datetime.combine(end_date, datetime.max.time()) if end_date else None
         indep_counts = await get_independent_detection_rate_counts(
             db=db,
-            project_ids=accessible_project_ids,
+            project_ids=project_ids,
             interval_minutes=interval,
             species_filter=species_list,
             start_date=start_dt,
@@ -859,7 +824,69 @@ async def get_detection_rate_map(
     # Pool the per-(deployment, species) rows into one point per site.
     # Detection counts and trap-days sum across the site's deployments, so
     # the rate stays effort-corrected. See pool_map_rows.
-    buckets = pool_map_rows(rows, indep_counts)
+    return pool_map_rows(rows, indep_counts)
+
+
+@router.get(
+    "/detection-rate-map",
+    response_model=DetectionRateMapResponse,
+)
+async def get_detection_rate_map(
+    project_id: Optional[int] = Query(None, description="Filter to a single project"),
+    species: Optional[str] = Query(
+        None,
+        description=(
+            "Comma-separated species (case-insensitive). Several species "
+            "combine their counts into one abundance."
+        ),
+    ),
+    start_date: Optional[date] = Query(None, description="Filter detections from this date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Filter detections to this date (YYYY-MM-DD)"),
+    site_ids: Optional[str] = Query(None, description="Comma-separated site IDs"),
+    source: LabelSource = _source_param(),
+    accessible_project_ids: List[int] = Depends(get_accessible_project_ids),
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_verified_user),
+):
+    """
+    Get detection rate map data as GeoJSON.
+
+    Returns one point per SITE with its pooled detection rate (detections per
+    trap-day). Each site's deployments are summed together, so a place with
+    several deployments (relocations, or more than one camera) is a single point
+    instead of overlapping points. Deployments with no site are excluded.
+
+    Filtering:
+    - Automatically filtered by user's accessible projects
+    - Optional species filter (comma-separated, case-insensitive; several
+      species sum their counts into a combined abundance)
+    - Optional date range filter (applies to detection dates)
+    - Respects project detection thresholds
+
+    Detection rate calculation:
+    - detections = count of detections in deployment period (optionally filtered by species/dates)
+    - trap_days = end_date - start_date + 1 (or today - start_date + 1 for active deployments)
+    - detection_rate = detections / trap_days
+    - Shows 0.0 for deployments with no detections
+    """
+    accessible_project_ids = narrow_to_project(accessible_project_ids, project_id)
+    site_id_list = await _scoped_site_ids(current_user, project_id, db, site_ids)
+    # Lowercased list for the = ANY comparisons in the query. Several species
+    # merge their counts, which is the combined-abundance behaviour of the map.
+    species_list = (
+        [s.strip().lower() for s in species.split(',') if s.strip()] if species else None
+    ) or None
+
+    buckets = await fetch_site_buckets(
+        db,
+        project_ids=accessible_project_ids,
+        site_id_list=site_id_list,
+        project_id=project_id,
+        source=source,
+        species_list=species_list,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     features = []
     for site_id, b in buckets.items():
@@ -2913,6 +2940,23 @@ class PerformanceAggregateRow(BaseModel):
     diff: int  # ai_count - human_count, negative means AI under-counts
 
 
+class PerformanceSiteRow(BaseModel):
+    """Per-site accuracy and empty-trigger rate over the verified images.
+
+    The site comes from each image's own deployment, so historical images
+    count at the place the camera stood when they were taken. Accuracy is
+    the diagonal share of the site's paired subjects, the same rule as
+    matrix_accuracy. An empty trigger is a verified image where the
+    validator recorded nothing."""
+    site_id: Optional[int]  # None when the image's deployment has no site
+    site_name: str
+    verified_images: int
+    subjects: int
+    accuracy: float
+    empty_images: int
+    empty_rate: float
+
+
 class PerformanceResponse(BaseModel):
     """Performance data for a project: aggregate + confusion matrix"""
     total_verified_images: int
@@ -2924,6 +2968,289 @@ class PerformanceResponse(BaseModel):
     matrix_correct: int
     matrix_accuracy: float
     matrix_subjects: int  # cells in the matrix, one per paired subject
+    by_site: List[PerformanceSiteRow]
+
+
+def pair_verified_images(
+    images: list,
+    detection_threshold: float,
+    classification_thresholds: Optional[dict],
+    site_by_deployment: Dict[Optional[int], tuple],
+):
+    """
+    One pass over the verified images: aggregate per-species instance
+    counts, the (truth, prediction) subject pairs for the confusion
+    matrix, and the per-site accumulators for the by-site table.
+
+    Pure, so the pairing and the site accounting are testable without a
+    database. site_by_deployment maps a deployment id to (site_id,
+    site_name); images without a resolved site land on the (None, None)
+    key, fail closed like everywhere else.
+    """
+    from collections import Counter, defaultdict
+
+    human_counts: Counter = Counter()  # aggregate: human instances by species
+    ai_counts: Counter = Counter()     # aggregate: AI instances by species
+    matrix_counts: Counter = Counter() # matrix: (gt, pred) -> subjects
+    site_acc: Dict[tuple, dict] = defaultdict(
+        lambda: {"images": 0, "subjects": 0, "correct": 0, "empty": 0}
+    )
+
+    for image in images:
+        # ----- Human side: species -> number of individuals -----
+        # Sum HumanObservation.count for every observation row on this image.
+        image_human: Counter = Counter()
+        for obs in image.human_observations:
+            image_human[obs.species] += obs.count
+
+        # ----- AI side: label -> number of visible detections -----
+        # "Visible" = passes detection_threshold AND (for animals) passes the
+        # per-species classification_threshold. Mirrors images.py:785-808.
+        image_ai: Counter = Counter()
+        for d in image.detections:
+            if d.confidence < detection_threshold:
+                continue
+            if d.category in ("person", "vehicle"):
+                image_ai[d.category] += 1
+            elif d.category == "animal" and d.classifications:
+                cls = d.classifications[0]
+                cls_thresh = effective_classification_threshold(
+                    classification_thresholds, cls.species,
+                )
+                if cls.confidence < cls_thresh:
+                    continue
+                image_ai[cls.species] += 1
+
+        human_counts.update(image_human)
+        ai_counts.update(image_ai)
+        # One cell per subject, so an image holding a person and a car adds
+        # two agreements instead of one agreement and one false error.
+        pairs = pair_image_labels(image_human, image_ai)
+        matrix_counts.update(pairs)
+
+        acc = site_acc[site_by_deployment.get(image.deployment_id, (None, None))]
+        acc["images"] += 1
+        acc["subjects"] += len(pairs)
+        acc["correct"] += sum(1 for gt, pred in pairs if gt == pred)
+        if not image_human:
+            acc["empty"] += 1
+
+    return human_counts, ai_counts, matrix_counts, site_acc
+
+
+async def _load_verified_images(
+    db: AsyncSession,
+    project_id: int,
+    site_id_list: Optional[List[int]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> list:
+    """
+    Verified, classified, non-hidden images of a project with their
+    detections and human observations eagerly loaded, in one query. The
+    input of every comparison between the AI and the validators. Site and
+    date filters apply when set.
+    """
+    query = (
+        select(Image)
+        .join(Camera, Image.camera_id == Camera.id)
+        .where(
+            Camera.project_id == project_id,
+            Image.is_verified == True,
+            Image.status == "classified",
+            Image.is_hidden == False,
+        )
+        .options(
+            selectinload(Image.human_observations),
+            selectinload(Image.detections).selectinload(Detection.classifications),
+        )
+    )
+    if site_id_list:
+        query = query.where(_site_image_condition(site_id_list))
+    if start_date is not None:
+        query = query.where(
+            Image.captured_at >= datetime.combine(start_date, datetime.min.time())
+        )
+    if end_date is not None:
+        query = query.where(
+            Image.captured_at <= datetime.combine(end_date, datetime.max.time())
+        )
+    result = await db.execute(query)
+    return result.scalars().unique().all()
+
+
+# Thresholds tried by the threshold check, 0% to 95% in 5% steps. At 100%
+# nothing passes, so precision is undefined there.
+THRESHOLD_CHECK_STEPS = [round(i * 0.05, 2) for i in range(20)]
+# Fewer verified examples than this and the curve is noise, so no suggestion.
+THRESHOLD_CHECK_MIN_SUPPORT = 20
+# F1 within this of the best counts as the best. Smaller gains are noise and
+# not worth moving a threshold for.
+THRESHOLD_CHECK_F1_TOLERANCE = 0.01
+ThresholdCheckMode = Literal["detection", "default", "species"]
+# Labels the classifier never outputs, so no classification threshold
+# touches them.
+NON_CLASSIFIER_LABELS = {EMPTY, "person", "vehicle"}
+
+
+def _precision_recall_f1(tp: int, predicted: int, actual: int):
+    precision = tp / predicted if predicted else None
+    recall = tp / actual if actual else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and precision + recall > 0
+        else None
+    )
+    return precision, recall, f1
+
+
+def threshold_check(
+    images: list,
+    detection_threshold: float,
+    classification_thresholds: Optional[dict],
+    mode: ThresholdCheckMode,
+    current: float,
+    species: Optional[str] = None,
+):
+    """
+    Precision, recall and F1 at every step of THRESHOLD_CHECK_STEPS, by
+    rerunning pair_verified_images with one threshold changed, so the
+    numbers follow the same pairing rules as the performance pages. Each
+    mode scores exactly what its slider controls:
+
+    - detection: the detection threshold moves, scored as "something is
+      there", any animal, person or vehicle against empty, whatever the
+      species.
+    - default: the classification default moves, scored over every species
+      without an override, pooled, so common species weigh most.
+    - species: that species' override moves, scored on its own row and
+      column of the matrix.
+
+    Returns (support, steps, suggested). Support is the number of true
+    subjects being scored, the same at every step. Suggested is None below
+    THRESHOLD_CHECK_MIN_SUPPORT. Otherwise it is `current` itself when that
+    scores within THRESHOLD_CHECK_F1_TOLERANCE of the best F1, else the
+    near-best step closest to `current`. F1 is often flat over a wide range,
+    and moving a threshold far for a gain that is noise helps nobody.
+    """
+    if (mode == "species") != (species is not None):
+        raise ValueError("species is required in species mode and only there")
+    thresholds = classification_thresholds or {}
+    overrides = thresholds.get("overrides") or {}
+
+    def hit(label: str) -> bool:
+        if mode == "detection":
+            return label != EMPTY
+        if mode == "default":
+            return label not in NON_CLASSIFIER_LABELS and label not in overrides
+        return label == species
+
+    def score(t: float) -> dict:
+        det_t, cls_t = detection_threshold, thresholds
+        if mode == "detection":
+            det_t = t
+        elif mode == "default":
+            cls_t = {**thresholds, "default": t}
+        else:
+            cls_t = {**thresholds, "overrides": {**overrides, species: t}}
+        _, _, matrix_counts, _ = pair_verified_images(images, det_t, cls_t, {})
+
+        tp = predicted = actual = 0
+        for (gt, pred), count in matrix_counts.items():
+            if hit(pred):
+                predicted += count
+            if hit(gt):
+                actual += count
+                # Detection only asks whether something is there; the
+                # classification modes need the right species.
+                if hit(pred) and (mode == "detection" or gt == pred):
+                    tp += count
+        precision, recall, f1 = _precision_recall_f1(tp, predicted, actual)
+        return {"threshold": t, "precision": precision, "recall": recall,
+                "f1": f1, "support": actual}
+
+    steps = [score(t) for t in THRESHOLD_CHECK_STEPS]
+    now = score(current)
+    support = now["support"]
+
+    scored = [s for s in steps + [now] if s["f1"] is not None]
+    suggested = None
+    if support >= THRESHOLD_CHECK_MIN_SUPPORT and scored:
+        good_enough = max(s["f1"] for s in scored) - THRESHOLD_CHECK_F1_TOLERANCE
+        if now["f1"] is not None and now["f1"] >= good_enough:
+            suggested = current
+        else:
+            suggested = min(
+                (s for s in steps if s["f1"] is not None and s["f1"] >= good_enough),
+                key=lambda s: abs(s["threshold"] - current),
+            )["threshold"]
+    for s in steps:
+        del s["support"]
+    return support, steps, suggested
+
+
+class ThresholdCheckStep(BaseModel):
+    threshold: float
+    precision: Optional[float]
+    recall: Optional[float]
+    f1: Optional[float]
+
+
+class ThresholdCheckResponse(BaseModel):
+    mode: ThresholdCheckMode
+    species: Optional[str]
+    verified_images: int
+    support: int
+    min_support: int
+    steps: List[ThresholdCheckStep]
+    suggested: Optional[float]
+
+
+@router.get("/threshold-check", response_model=ThresholdCheckResponse)
+async def get_threshold_check(
+    project_id: int = Query(..., description="Project to check"),
+    mode: ThresholdCheckMode = Query(..., description="Which slider to check"),
+    species: Optional[str] = Query(
+        None, description="Species whose override to check, species mode only",
+    ),
+    current: float = Query(
+        ..., ge=0.0, le=1.0, description="The slider's value now, saved or not",
+    ),
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(require_project_admin_access),
+):
+    """
+    How precision, recall and F1 change with one threshold, measured on all
+    verified images of the project, for the threshold check on the settings
+    page. Admin only, because only admins set thresholds; admins are never
+    site restricted, so no scope applies. No site or date filters on
+    purpose: a threshold is project wide, so it is judged on all the data.
+    The other thresholds stay at their saved values.
+    """
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    if (mode == "species") != (species is not None):
+        raise HTTPException(
+            status_code=422, detail="Pass species in species mode, and only there",
+        )
+
+    images = await _load_verified_images(db, project_id)
+    support, steps, suggested = threshold_check(
+        images, project.detection_threshold, project.classification_thresholds,
+        mode, current, species,
+    )
+    return ThresholdCheckResponse(
+        mode=mode,
+        species=species,
+        verified_images=len(images),
+        support=support,
+        min_support=THRESHOLD_CHECK_MIN_SUPPORT,
+        steps=steps,
+        suggested=suggested,
+    )
 
 
 @router.get("/performance", response_model=PerformanceResponse)
@@ -2976,72 +3303,44 @@ async def get_performance(
         )
 
     site_id_list = await _scoped_site_ids(current_user, project_id, db, site_ids)
-
-    # Fetch verified, classified, non-hidden images for this project with
-    # their detections and human observations eagerly loaded. One query.
-    # site_ids and date window apply when set.
-    query = (
-        select(Image)
-        .join(Camera, Image.camera_id == Camera.id)
-        .where(
-            Camera.project_id == project_id,
-            Image.is_verified == True,
-            Image.status == "classified",
-            Image.is_hidden == False,
-        )
-        .options(
-            selectinload(Image.human_observations),
-            selectinload(Image.detections).selectinload(Detection.classifications),
-        )
+    images = await _load_verified_images(
+        db, project_id, site_id_list, start_date, end_date,
     )
-    if site_id_list:
-        query = query.where(_site_image_condition(site_id_list))
-    if start_date is not None:
-        query = query.where(
-            Image.captured_at >= datetime.combine(start_date, datetime.min.time())
+
+    # Site per deployment, for the by-site rows. Resolved through each
+    # image's own deployment, which is time-correct for historical data.
+    dep_result = await db.execute(
+        select(Deployment.id, Deployment.site_id, Site.name)
+        .join(Camera, Deployment.camera_id == Camera.id)
+        .outerjoin(Site, Site.id == Deployment.site_id)
+        .where(Camera.project_id == project_id)
+    )
+    site_by_deployment = {
+        row.id: (row.site_id, row.name) for row in dep_result.all()
+    }
+
+    human_counts, ai_counts, matrix_counts, site_acc = pair_verified_images(
+        images,
+        project.detection_threshold,
+        project.classification_thresholds,
+        site_by_deployment,
+    )
+
+    # One row per site, biggest support first so a 2-image site never tops
+    # the list by accident.
+    by_site = [
+        PerformanceSiteRow(
+            site_id=site_id,
+            site_name=site_name or "No site",
+            verified_images=acc["images"],
+            subjects=acc["subjects"],
+            accuracy=(acc["correct"] / acc["subjects"]) if acc["subjects"] else 0.0,
+            empty_images=acc["empty"],
+            empty_rate=(acc["empty"] / acc["images"]) if acc["images"] else 0.0,
         )
-    if end_date is not None:
-        query = query.where(
-            Image.captured_at <= datetime.combine(end_date, datetime.max.time())
-        )
-    result = await db.execute(query)
-    images = result.scalars().unique().all()
-
-    from collections import Counter
-    human_counts: Counter = Counter()  # aggregate: human instances by species
-    ai_counts: Counter = Counter()     # aggregate: AI instances by species
-    matrix_counts: Counter = Counter() # matrix: (gt, pred) -> subjects
-
-    for image in images:
-        # ----- Human side: species -> number of individuals -----
-        # Sum HumanObservation.count for every observation row on this image.
-        image_human: Counter = Counter()
-        for obs in image.human_observations:
-            image_human[obs.species] += obs.count
-
-        # ----- AI side: label -> number of visible detections -----
-        # "Visible" = passes detection_threshold AND (for animals) passes the
-        # per-species classification_threshold. Mirrors images.py:785-808.
-        image_ai: Counter = Counter()
-        for d in image.detections:
-            if d.confidence < project.detection_threshold:
-                continue
-            if d.category in ("person", "vehicle"):
-                image_ai[d.category] += 1
-            elif d.category == "animal" and d.classifications:
-                cls = d.classifications[0]
-                cls_thresh = effective_classification_threshold(
-                    project.classification_thresholds, cls.species,
-                )
-                if cls.confidence < cls_thresh:
-                    continue
-                image_ai[cls.species] += 1
-
-        human_counts.update(image_human)
-        ai_counts.update(image_ai)
-        # One cell per subject, so an image holding a person and a car adds
-        # two agreements instead of one agreement and one false error.
-        matrix_counts.update(pair_image_labels(image_human, image_ai))
+        for (site_id, site_name), acc in site_acc.items()
+    ]
+    by_site.sort(key=lambda r: r.verified_images, reverse=True)
 
     # Build aggregate rows, sorted by max(human, ai) descending so the most
     # prominent species sit at the top of the table.
@@ -3089,4 +3388,5 @@ async def get_performance(
         matrix_correct=matrix_correct,
         matrix_accuracy=matrix_accuracy,
         matrix_subjects=total_pairs,
+        by_site=by_site,
     )

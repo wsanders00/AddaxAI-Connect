@@ -6,12 +6,18 @@
  * top-N + filters, "Other" folding for the long tail, and the diverging
  * F1 palette from AddaxAI WebUI.
  */
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
+import { usePersistedFilterParams } from '../../lib/use-persisted-filter-params';
 import { Info, Loader2, Target } from 'lucide-react';
 
-import { performanceApi, type PerformanceData } from '../../api/performance';
+import {
+  performanceApi,
+  type PerformanceData,
+  type PerformanceSiteRow,
+} from '../../api/performance';
+import { SortableHeader, type SortState } from '../../components/ui/SortableHeader';
 import { sitesApi } from '../../api/sites';
 import { statisticsApi } from '../../api/statistics';
 import { Card, CardContent } from '../../components/ui/Card';
@@ -25,7 +31,13 @@ import { InsightsPageLayout } from '../../components/layout/InsightsPageLayout';
 import { PerformanceSummaryCards } from '../../components/performance/PerformanceSummaryCards';
 import { PlotExplainer } from '../../components/plots/PlotExplainer';
 import { normalizeLabel, DETECTOR_CATEGORIES } from '../../utils/labels';
-import { f1DivergingColor, formatPercent } from '../../utils/performance-metrics';
+import {
+  f1DivergingColor,
+  filterPerformanceClasses,
+  formatPercent,
+  labelFilterOptions,
+  performanceImagesUrl,
+} from '../../utils/performance-metrics';
 import {
   filtersFromSearchParams,
   filtersToSearchParams,
@@ -46,6 +58,9 @@ const FILTER_SCHEMA: FilterSchema = {
   date_to: 'date',
   tags: 'string[]',
   site_ids: 'string[]',
+  // Same mental model as the Labels filter on the Images page: empty means
+  // all, a selection narrows every number on the page to those classes.
+  species: 'string[]',
   top_n: 'string',
 };
 
@@ -199,7 +214,8 @@ function weightedAverage(
 const MetricsTable: React.FC<{
   rows: ClassRow[];
   projectId: number;
-}> = ({ rows, projectId }) => {
+  scope: ImagesScope;
+}> = ({ rows, projectId, scope }) => {
   const navigate = useNavigate();
 
   const macroP = averageOver(rows, 'precision');
@@ -211,10 +227,7 @@ const MetricsTable: React.FC<{
 
   const handleRowClick = (row: ClassRow) => {
     if (row.isOther || row.isDetectorCategory) return;
-    const params = new URLSearchParams();
-    params.set('species', row.className);
-    params.set('verified', 'true');
-    navigate(`/projects/${projectId}/images?${params.toString()}`);
+    navigate(performanceImagesUrl(projectId, scope, { species: row.className }));
   };
 
   if (rows.length === 0) {
@@ -302,14 +315,144 @@ const SummaryRow: React.FC<{
   </tr>
 );
 
+type SiteColumn = 'site' | 'verified' | 'subjects' | 'accuracy' | 'empty';
+
+/** The page filters a click carries into the Images page. */
+type ImagesScope = Parameters<typeof performanceImagesUrl>[1];
+
+const SiteTable: React.FC<{
+  rows: PerformanceSiteRow[];
+  projectId: number;
+  scope: ImagesScope;
+}> = ({ rows, projectId, scope }) => {
+  const navigate = useNavigate();
+  // Biggest support first by default, so a 2-image site never tops the
+  // accuracy ranking by accident.
+  const [sort, setSort] = useState<SortState<SiteColumn>>({
+    column: 'verified',
+    direction: 'desc',
+  });
+
+  // A new column starts A to Z for the name, highest first for numbers;
+  // a second click flips it.
+  const onSort = (column: SiteColumn) =>
+    setSort((prev) => ({
+      column,
+      direction:
+        prev.column === column
+          ? prev.direction === 'asc' ? 'desc' : 'asc'
+          : column === 'site' ? 'asc' : 'desc',
+    }));
+
+  const sorted = useMemo(() => {
+    const value = (r: PerformanceSiteRow): string | number => {
+      switch (sort.column) {
+        case 'site':
+          return r.site_name.toLowerCase();
+        case 'subjects':
+          return r.subjects;
+        case 'accuracy':
+          return r.accuracy;
+        case 'empty':
+          return r.empty_rate;
+        default:
+          return r.verified_images;
+      }
+    };
+    const dir = sort.direction === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const va = value(a);
+      const vb = value(b);
+      if (va < vb) return -dir;
+      if (va > vb) return dir;
+      return 0;
+    });
+  }, [rows, sort]);
+
+  const handleRowClick = (row: PerformanceSiteRow) => {
+    if (row.site_id === null) return;
+    navigate(performanceImagesUrl(projectId, scope, { site_id: String(row.site_id) }));
+  };
+
+  return (
+    <div className="block max-w-full max-h-[60vh] overflow-auto border border-input rounded-md">
+      <table className="text-sm w-full">
+        <thead className="sticky top-0 bg-background border-b">
+          <tr>
+            <th className="text-left py-2 pl-4 pr-6 font-medium">
+              <SortableHeader label="Site" column="site" sort={sort} onSort={onSort} />
+            </th>
+            <th className="text-right py-2 px-6 font-medium">
+              <SortableHeader label="Verified images" column="verified" align="right" sort={sort} onSort={onSort} />
+            </th>
+            <th className="text-right py-2 px-6 font-medium">
+              <SortableHeader label="Subjects" column="subjects" align="right" sort={sort} onSort={onSort} />
+            </th>
+            <th className="text-right py-2 px-6 font-medium">
+              <SortableHeader label="Subjects matched" column="accuracy" align="right" sort={sort} onSort={onSort} />
+            </th>
+            <th className="text-right py-2 pl-6 pr-4 font-medium">
+              <SortableHeader label="Empty rate" column="empty" align="right" sort={sort} onSort={onSort} />
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((row) => {
+            const clickable = row.site_id !== null;
+            return (
+              <tr
+                key={`${row.site_id}-${row.site_name}`}
+                onClick={clickable ? () => handleRowClick(row) : undefined}
+                title={
+                  clickable
+                    ? `Click to open verified images of ${row.site_name}`
+                    : 'Images whose place could not be resolved'
+                }
+                className={`border-b border-border/50 ${
+                  clickable
+                    ? 'cursor-pointer hover:bg-muted/30'
+                    : 'italic text-muted-foreground'
+                }`}
+              >
+                <td
+                  className="py-1.5 pl-4 pr-6 overflow-hidden text-ellipsis whitespace-nowrap"
+                  style={{ maxWidth: '14rem' }}
+                >
+                  {row.site_name}
+                </td>
+                <td className="py-1.5 px-6 text-right tabular-nums">
+                  {row.verified_images.toLocaleString()}
+                </td>
+                <td className="py-1.5 px-6 text-right tabular-nums">
+                  {row.subjects.toLocaleString()}
+                </td>
+                <td
+                  className="py-1.5 px-6 text-right tabular-nums"
+                  style={f1DivergingColor(row.accuracy)}
+                >
+                  {fmtMetric(row.accuracy)}
+                </td>
+                <td className="py-1.5 pl-6 pr-4 text-right tabular-nums">
+                  {fmtMetric(row.empty_rate)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 export const PerClassPerformancePage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const projectIdNum = parseInt(projectId || '0', 10);
 
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = usePersistedFilterParams('per-class-performance', FILTER_SCHEMA);
   const parsed = filtersFromSearchParams(searchParams, FILTER_SCHEMA);
   const siteIdValues = asStringArray(parsed.site_ids);
   const tagValues = asStringArray(parsed.tags);
+  const labelValues = asStringArray(parsed.species);
   const startDate = asString(parsed.date_from);
   const endDate = asString(parsed.date_to);
   const topNRaw = asString(parsed.top_n);
@@ -326,6 +469,7 @@ export const PerClassPerformancePage: React.FC = () => {
   const filterValues: Record<string, FilterValue> = {
     site_ids: siteIdValues.length > 0 ? siteIdValues : undefined,
     tags: tagValues.length > 0 ? tagValues : undefined,
+    species: labelValues.length > 0 ? labelValues : undefined,
     date_from: startDate || undefined,
     date_to: endDate || undefined,
   };
@@ -343,6 +487,7 @@ export const PerClassPerformancePage: React.FC = () => {
     writeAll({
       site_ids: undefined,
       tags: undefined,
+      species: undefined,
       date_from: undefined,
       date_to: undefined,
     });
@@ -391,6 +536,14 @@ export const PerClassPerformancePage: React.FC = () => {
     () => [
       {
         kind: 'multi-select',
+        key: 'species',
+        label: 'Labels',
+        options: labelFilterOptions(data, labelValues),
+        placeholder: 'All labels',
+        summary: (n) => `${n} labels`,
+      },
+      {
+        kind: 'multi-select',
         key: 'site_ids',
         label: 'Sites',
         options: (sites ?? []).map((s) => ({ label: s.name, value: String(s.id) })),
@@ -414,7 +567,7 @@ export const PerClassPerformancePage: React.FC = () => {
         maxDate: overview?.last_image_date,
       },
     ],
-    [sites, tagOptions, overview],
+    [sites, tagOptions, overview, data, labelValues],
   );
 
   const displayControls = useMemo<DisplayControlDef[]>(
@@ -423,14 +576,28 @@ export const PerClassPerformancePage: React.FC = () => {
   );
   const displayValues: Record<string, string> = { top_n: topNValue };
 
-  const rows = useMemo<ClassRow[] | null>(() => {
-    if (!data) return null;
-    return buildRows(data, topN);
-  }, [data, topN]);
+  const imagesScope: ImagesScope = {
+    siteIds: siteIdsParam,
+    dateFrom: startDate || undefined,
+    dateTo: endDate || undefined,
+  };
 
-  const totalClasses = data?.matrix_classes.filter((_, i) => {
-    if (!data) return false;
-    return data.matrix_row_totals[i] > 0 || data.matrix_col_totals[i] > 0;
+  // The Labels narrowing happens client-side on the loaded data, so
+  // toggling a class is instant and needs no refetch. The by-site table is
+  // server-computed and stays project-wide.
+  const effectiveData = useMemo(
+    () => (data ? filterPerformanceClasses(data, labelValues) : undefined),
+    [data, labelValues],
+  );
+
+  const rows = useMemo<ClassRow[] | null>(() => {
+    if (!effectiveData) return null;
+    return buildRows(effectiveData, topN);
+  }, [effectiveData, topN]);
+
+  const totalClasses = effectiveData?.matrix_classes.filter((_, i) => {
+    if (!effectiveData) return false;
+    return effectiveData.matrix_row_totals[i] > 0 || effectiveData.matrix_col_totals[i] > 0;
   }).length ?? 0;
   const foldedCount = topN === null ? 0 : Math.max(0, totalClasses - topN);
 
@@ -460,7 +627,7 @@ export const PerClassPerformancePage: React.FC = () => {
             <p className="text-muted-foreground text-sm">Unable to load performance data</p>
           </CardContent>
         </Card>
-      ) : data.total_verified_images === 0 || rows === null || rows.length === 0 ? (
+      ) : !effectiveData || effectiveData.total_verified_images === 0 || rows === null || rows.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <Target className="h-12 w-12 text-muted-foreground mb-4" />
@@ -472,16 +639,16 @@ export const PerClassPerformancePage: React.FC = () => {
         </Card>
       ) : (
         <>
-          <PerformanceSummaryCards data={data} />
+          <PerformanceSummaryCards data={effectiveData} />
           <div className="rounded-lg border bg-card p-4 space-y-3">
-            <MetricsTable rows={rows} projectId={projectIdNum} />
+            <MetricsTable rows={rows} projectId={projectIdNum} scope={imagesScope} />
             <div className="border-t pt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>
-                Based on {data.matrix_subjects.toLocaleString()} subject
-                {data.matrix_subjects === 1 ? '' : 's'} in{' '}
-                {data.total_verified_images.toLocaleString()} verified image
-                {data.total_verified_images === 1 ? '' : 's'}
+                Based on {effectiveData.matrix_subjects.toLocaleString()} subject
+                {effectiveData.matrix_subjects === 1 ? '' : 's'} in{' '}
+                {effectiveData.total_verified_images.toLocaleString()} verified image
+                {effectiveData.total_verified_images === 1 ? '' : 's'}
               </span>
               <span aria-hidden="true">·</span>
               <span>
@@ -498,7 +665,33 @@ export const PerClassPerformancePage: React.FC = () => {
               <span>Click a class to open the underlying images</span>
             </div>
           </div>
+
         </>
+      )}
+
+      {/* The Labels filter never applies here, so the card stays even when
+          it narrows the rest of the page to nothing. */}
+      {data && data.by_site.length > 0 && (
+        <div className="rounded-lg border bg-card p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-medium">Performance by site</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Subjects matched is the share of subjects where the AI agreed
+              with the validator. Empty rate is the share of verified images
+              where the validator recorded nothing.
+            </p>
+          </div>
+          <SiteTable rows={data.by_site} projectId={projectIdNum} scope={imagesScope} />
+          <div className="border-t pt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <Info className="h-3.5 w-3.5 shrink-0" />
+            <span>
+              Judge sites with few verified images carefully, a handful of
+              images makes any rate jump around
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>Click a site to open its verified images</span>
+          </div>
+        </div>
       )}
 
       <PlotExplainer
@@ -520,6 +713,9 @@ export const PerClassPerformancePage: React.FC = () => {
             underlying verified images. Detector categories (<em>empty</em>, <em>person</em>,{' '}
             <em>vehicle</em>) and the <em>other</em> bucket render in italics and are excluded
             from the macro / weighted averages because they are not classifier predictions.
+            The Labels filter narrows every number on this page except the by-site table,
+            which always covers all labels. Deselect a label to keep a known mismatch, like
+            hand-typed species the AI cannot know, out of the scores.
           </p>
         }
       />

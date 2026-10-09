@@ -8,6 +8,42 @@
  * matrix cells and the F1 column.
  */
 import type { PerformanceData } from '../api/performance';
+import { normalizeLabel } from './labels';
+
+/**
+ * Options for the Labels filter: every class in the data, plus any label
+ * already selected that the data no longer holds (a narrower date range).
+ * Without the second part a selected label would vanish from the control,
+ * which then reads "All labels" while the filter still narrows the page.
+ */
+export function labelFilterOptions(
+  data: PerformanceData | undefined,
+  selected: string[],
+): { label: string; value: string }[] {
+  const present = (data?.matrix_classes ?? []).filter(
+    (_, i) => data!.matrix_row_totals[i] > 0 || data!.matrix_col_totals[i] > 0,
+  );
+  const all = [...present, ...selected.filter((s) => !present.includes(s))];
+  return all.map((cls) => ({ label: normalizeLabel(cls), value: cls }));
+}
+
+/**
+ * Link to the verified images behind a number on a performance page, carrying
+ * the page's own date range and site filter, so the images match the number
+ * that was clicked. `extra` holds what the clicked row or cell adds.
+ */
+export function performanceImagesUrl(
+  projectId: number,
+  scope: { siteIds?: string; dateFrom?: string; dateTo?: string },
+  extra: Record<string, string>,
+): string {
+  const params = new URLSearchParams(extra);
+  params.set('verified', 'true');
+  if (scope.siteIds && !params.has('site_id')) params.set('site_id', scope.siteIds);
+  if (scope.dateFrom) params.set('date_from', scope.dateFrom);
+  if (scope.dateTo) params.set('date_to', scope.dateTo);
+  return `/projects/${projectId}/images?${params.toString()}`;
+}
 
 export interface ClassMetrics {
   species: string;
@@ -25,6 +61,50 @@ export interface DetailedMetrics {
   weightedP: number | null;
   weightedR: number | null;
   weightedF1: number | null;
+}
+
+/**
+ * Narrow the performance data to the selected labels, the same mental model
+ * as the Labels filter on the Images page. An empty selection means all.
+ *
+ * Dropping a class removes its row AND its column, so a subject paired with
+ * a deselected class disappears from every number instead of counting as an
+ * error. That is the point: a validator who retypes mustelids as pine
+ * marten can deselect the classes involved and read the AI's performance on
+ * everything else. The by-site table is computed on the server and passes
+ * through unchanged.
+ */
+export function filterPerformanceClasses(
+  data: PerformanceData,
+  selected: string[],
+): PerformanceData {
+  if (selected.length === 0) return data;
+  const keep = new Set(selected);
+  const indices = data.matrix_classes
+    .map((cls, idx) => ({ cls, idx }))
+    .filter(({ cls }) => keep.has(cls));
+
+  const matrix = indices.map(({ idx: r }) =>
+    indices.map(({ idx: c }) => data.matrix[r][c]),
+  );
+  const rowTotals = matrix.map((row) => row.reduce((s, v) => s + v, 0));
+  const colTotals = indices.map((_, j) =>
+    matrix.reduce((s, row) => s + row[j], 0),
+  );
+  const correct = matrix.reduce((s, row, i) => s + row[i], 0);
+  const subjects = rowTotals.reduce((s, v) => s + v, 0);
+
+  return {
+    ...data,
+    aggregate: data.aggregate.filter((row) => keep.has(row.species)),
+    matrix_classes: indices.map(({ cls }) => cls),
+    matrix,
+    matrix_row_totals: rowTotals,
+    matrix_col_totals: colTotals,
+    matrix_correct: correct,
+    matrix_accuracy: subjects > 0 ? correct / subjects : 0,
+    matrix_subjects: subjects,
+  };
 }
 
 export function formatPercent(value: number): string {

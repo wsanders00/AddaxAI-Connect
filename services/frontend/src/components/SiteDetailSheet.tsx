@@ -10,7 +10,7 @@
  * Merge and Delete live in a kebab menu in the header (admins only). Both open
  * the parent's existing dialogs via `onMergeRequested` / `onDeleteRequested`.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -32,7 +32,7 @@ import {
   SheetBody,
 } from './ui/Sheet';
 import { Button } from './ui/Button';
-import { sitesApi } from '../api/sites';
+import { sitesApi, type SiteDetail } from '../api/sites';
 import type { Camera } from '../api/types';
 import {
   getStatusColor,
@@ -42,11 +42,12 @@ import {
   STATUS_LABELS,
   UNKNOWN_COLOR,
 } from '../utils/camera-colors';
-import { TagInput } from './TagInput';
+import { TagInput, type TagManagement } from './TagInput';
 import { DeploymentJourney } from './DeploymentJourney';
 import { SiteLocationMiniMap } from './sites/SiteLocationMiniMap';
-import { cn } from '../lib/utils';
 import { useToast } from './ui/Toaster';
+import { ServiceSummaryRows } from './service/ServiceSummaryRows';
+import { TabStrip } from './ui/TabStrip';
 
 type TabType = 'overview' | 'cameras' | 'deployments';
 
@@ -65,6 +66,8 @@ interface Props {
   // sites list and the existing mutations), so the kebab just signals up.
   onMergeRequested: (site: { id: number; name: string }) => void;
   onDeleteRequested: (site: { id: number; name: string }) => void;
+  // Project-wide rename and delete inside the tag widget, admin contexts only.
+  tagManagement?: TagManagement;
 }
 
 
@@ -108,6 +111,7 @@ export const SiteDetailSheet: React.FC<Props> = ({
   canEdit,
   onMergeRequested,
   onDeleteRequested,
+  tagManagement,
 }) => {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -141,10 +145,32 @@ export const SiteDetailSheet: React.FC<Props> = ({
     setEditTags(detail.tags ?? []);
   };
 
-  // Reseed when the loaded detail changes (open a different site, or after a
-  // save invalidates the cache).
+  // True when the form differs from the given copy of the site.
+  const differsFrom = (d: SiteDetail) =>
+    editName.trim() !== d.name ||
+    (editHabitat.trim() || null) !== (d.habitat_type ?? null) ||
+    (editNotes.trim() || null) !== (d.notes ?? null) ||
+    JSON.stringify(editTags) !== JSON.stringify(d.tags ?? []);
+
+  // Reseed when the loaded detail changes: another site opened, a save, or a
+  // project-wide tag rename or delete started from this form's tag field.
+  // In that last case the form can hold unsaved edits. They stay, and only
+  // the server's tag change (tags gone, tags new) is applied to the field,
+  // so a later Save does not undo the rename on this site.
+  const seededFrom = useRef<SiteDetail | null>(null);
   useEffect(() => {
-    resetForm();
+    if (!detail) return;
+    const prev = seededFrom.current;
+    seededFrom.current = detail;
+    if (!prev || prev.id !== detail.id || !differsFrom(prev)) {
+      resetForm();
+      return;
+    }
+    const before = prev.tags ?? [];
+    const after = detail.tags ?? [];
+    const gone = new Set(before.filter((t) => !after.includes(t)));
+    const added = after.filter((t) => !before.includes(t));
+    setEditTags((tags) => [...new Set([...tags.filter((t) => !gone.has(t)), ...added])]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail]);
 
@@ -155,12 +181,7 @@ export const SiteDetailSheet: React.FC<Props> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteId]);
 
-  const coreChanged =
-    !!detail &&
-    (editName.trim() !== detail.name ||
-      (editHabitat.trim() || null) !== (detail.habitat_type ?? null) ||
-      (editNotes.trim() || null) !== (detail.notes ?? null) ||
-      JSON.stringify(editTags) !== JSON.stringify(detail.tags ?? []));
+  const coreChanged = !!detail && differsFrom(detail);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -179,20 +200,6 @@ export const SiteDetailSheet: React.FC<Props> = ({
     onError: (err) => toast.error(`Could not update site, ${errMsg(err)}`),
   });
 
-  const TabButton = ({ tab, label }: { tab: TabType; label: string }) => (
-    <button
-      onClick={() => setActiveTab(tab)}
-      className={cn(
-        'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
-        activeTab === tab
-          ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground hover:text-foreground',
-      )}
-    >
-      {label}
-    </button>
-  );
-
   if (!siteId) return null;
 
   return (
@@ -207,11 +214,16 @@ export const SiteDetailSheet: React.FC<Props> = ({
           </SheetHeader>
 
           <SheetBody className="space-y-6">
-            <div className="flex border-b -mt-2">
-              <TabButton tab="overview" label="Overview" />
-              <TabButton tab="cameras" label="Cameras" />
-              <TabButton tab="deployments" label="History" />
-            </div>
+            <TabStrip<TabType>
+              className="-mt-2"
+              tabs={[
+                { key: 'overview', label: 'Overview' },
+                { key: 'cameras', label: 'Cameras' },
+                { key: 'deployments', label: 'History' },
+              ]}
+              value={activeTab}
+              onChange={setActiveTab}
+            />
 
             {isLoading || !detail ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
@@ -308,6 +320,7 @@ export const SiteDetailSheet: React.FC<Props> = ({
                         onChange={setEditTags}
                         suggestions={tagSuggestions ?? []}
                         placeholder='For example "wetland" or "otter territory"'
+                        management={tagManagement}
                       />
                     ) : (
                       <div className="flex flex-wrap gap-1.5 min-h-[2.5rem] px-3 py-1.5">
@@ -390,6 +403,7 @@ export const SiteDetailSheet: React.FC<Props> = ({
                     <span className="text-muted-foreground">Images</span>
                     <span>{detail.image_count.toLocaleString()}</span>
                   </div>
+                  <ServiceSummaryRows projectId={projectId} by="site" id={detail.id} />
                 </div>
               </div>
             ) : activeTab === 'cameras' ? (

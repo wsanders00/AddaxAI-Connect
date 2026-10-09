@@ -19,10 +19,7 @@ import {
   DialogFooter,
 } from './ui/Dialog';
 import { Button } from './ui/Button';
-import { TagInput } from './TagInput';
-import { ACTION_LABELS, localToday, NOTE_MAX_LENGTH } from './CameraMaintenanceTab';
-import type { MaintenanceActionType } from '../api/types';
-import type { LogMaintenanceRequest } from '../api/cameras';
+import { TagInput, type TagManagement } from './TagInput';
 
 interface CommonProps {
   open: boolean;
@@ -39,10 +36,12 @@ const plural = (count: number, noun: string) =>
 interface TagsDialogProps extends CommonProps {
   suggestions: string[];
   onConfirm: (tags: string[]) => void;
+  // Project-wide rename and delete inside the tag widget, admin contexts only.
+  tagManagement?: TagManagement;
 }
 
 export const BulkAddTagsDialog: React.FC<TagsDialogProps> = ({
-  open, onClose, count, noun, isPending, suggestions, onConfirm,
+  open, onClose, count, noun, isPending, suggestions, onConfirm, tagManagement,
 }) => {
   const [tags, setTags] = useState<string[]>([]);
   // Reset on open so a previously-typed list does not leak across uses.
@@ -62,6 +61,7 @@ export const BulkAddTagsDialog: React.FC<TagsDialogProps> = ({
             value={tags}
             onChange={setTags}
             suggestions={suggestions}
+            management={tagManagement}
             placeholder="Add tag..."
           />
         </div>
@@ -86,7 +86,7 @@ export const BulkAddTagsDialog: React.FC<TagsDialogProps> = ({
 };
 
 export const BulkRemoveTagsDialog: React.FC<TagsDialogProps> = ({
-  open, onClose, count, noun, isPending, suggestions, onConfirm,
+  open, onClose, count, noun, isPending, suggestions, onConfirm, tagManagement,
 }) => {
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => { if (open) setTags([]); }, [open]);
@@ -105,6 +105,7 @@ export const BulkRemoveTagsDialog: React.FC<TagsDialogProps> = ({
             value={tags}
             onChange={setTags}
             suggestions={suggestions}
+            management={tagManagement}
             placeholder="Tag to remove..."
           />
         </div>
@@ -174,123 +175,6 @@ export const BulkSetSimExpiryDialog: React.FC<SimExpiryDialogProps> = ({
           >
             {isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
             {clear ? 'Clear date' : 'Set date'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-};
-
-interface LogMaintenanceDialogProps extends CommonProps {
-  members: { user_id: number; email: string }[];
-  currentUserId?: number;
-  onConfirm: (data: LogMaintenanceRequest) => void;
-}
-
-export const BulkLogMaintenanceDialog: React.FC<LogMaintenanceDialogProps> = ({
-  open, onClose, count, noun, isPending, members, currentUserId, onConfirm,
-}) => {
-  const [date, setDate] = useState(localToday());
-  const [actions, setActions] = useState<MaintenanceActionType[]>([]);
-  const [performedBy, setPerformedBy] = useState<number | ''>('');
-  const [note, setNote] = useState('');
-  useEffect(() => {
-    if (open) {
-      setDate(localToday());
-      setActions([]);
-      setPerformedBy(currentUserId ?? '');
-      setNote('');
-    }
-  }, [open, currentUserId]);
-
-  const toggleAction = (action: MaintenanceActionType) => {
-    setActions((prev) =>
-      prev.includes(action) ? prev.filter((a) => a !== action) : [...prev, action]
-    );
-  };
-
-  const dateInFuture = date !== '' && date > localToday();
-  const canConfirm = actions.length > 0 && date !== '' && !dateInFuture;
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent onClose={onClose}>
-        <DialogHeader>
-          <DialogTitle>Log a service visit on {plural(count, noun)}</DialogTitle>
-          <DialogDescription>
-            One visit with the same date and actions is logged on every selected {noun}.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="py-4 space-y-3">
-          <div>
-            <label className="text-xs text-muted-foreground">Date</label>
-            <input
-              type="date"
-              value={date}
-              max={localToday()}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full px-3 py-2 border rounded-md text-sm"
-            />
-            {dateInFuture && (
-              <p className="text-xs text-destructive mt-1">The date cannot be in the future.</p>
-            )}
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">Actions</label>
-            <div className="mt-1 space-y-1.5">
-              {(Object.keys(ACTION_LABELS) as MaintenanceActionType[]).map((action) => (
-                <label key={action} className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={actions.includes(action)}
-                    onChange={() => toggleAction(action)}
-                    className="w-4 h-4 cursor-pointer accent-primary"
-                  />
-                  {ACTION_LABELS[action]}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">Performed by</label>
-            <select
-              value={performedBy}
-              onChange={(e) => setPerformedBy(e.target.value === '' ? '' : Number(e.target.value))}
-              className="w-full px-3 py-2 border rounded-md text-sm bg-background"
-            >
-              <option value="">Not specified</option>
-              {members.map((m) => (
-                <option key={m.user_id} value={m.user_id}>{m.email}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">Note</label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Optional"
-              className="w-full px-3 py-2 border rounded-md text-sm"
-              rows={2}
-              maxLength={NOTE_MAX_LENGTH}
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={isPending}>Cancel</Button>
-          <Button
-            onClick={() =>
-              onConfirm({
-                event_date: date,
-                action_types: actions,
-                performed_by_user_id: performedBy === '' ? null : performedBy,
-                note: note.trim() || null,
-              })
-            }
-            disabled={isPending || !canConfirm}
-          >
-            {isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-            Log visit
           </Button>
         </DialogFooter>
       </DialogContent>

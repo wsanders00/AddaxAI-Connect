@@ -8,7 +8,8 @@
  * and refreshes preserve state, same as CamerasPage.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
+import { usePersistedFilterParams } from '../lib/use-persisted-filter-params';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   MapPin,
@@ -53,13 +54,19 @@ import { camerasApi } from '../api/cameras';
 import type { Camera } from '../api/types';
 import { buildSiteHealth, type SiteColorMode } from '../utils/site-health';
 import { SitesMapView } from '../components/sites/SitesMapView';
+import { MapSelectButton, MapSelectDialog } from '../components/map/MapSelectDialog';
 import { SiteMergePicker } from '../components/sites/SiteMergePicker';
 import { UnnamedSiteChip } from '../components/sites/UnnamedSiteChip';
 import { SiteDetailSheet } from '../components/SiteDetailSheet';
+import type { TagManagement } from '../components/TagInput';
 import { ColumnPicker } from '../components/ui/ColumnPicker';
 import { SortableHeader } from '../components/ui/SortableHeader';
 import { SelectAllCheckbox } from '../components/ui/SelectAllCheckbox';
 import { useBulkSelection } from '../hooks/useBulkSelection';
+import { BulkActionBar } from '../components/ui/BulkActionBar';
+import { TabStrip } from '../components/ui/TabStrip';
+import { PlanServiceDialog } from '../components/service/ServiceDialogs';
+import { usePlanService } from '../components/service/usePlanService';
 import {
   BulkAddTagsDialog,
   BulkRemoveTagsDialog,
@@ -141,7 +148,7 @@ export const SitesPage: React.FC = () => {
 
   // Filter and view-mode live in the URL so refreshing or sharing a link
   // preserves state. Same pattern as CamerasPage.
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = usePersistedFilterParams('sites', FILTER_SCHEMA);
   const parsedFilters = filtersFromSearchParams(searchParams, FILTER_SCHEMA);
   const searchQuery = asString(parsedFilters.search);
   const habitatFilter = asString(parsedFilters.habitat);
@@ -161,6 +168,9 @@ export const SitesPage: React.FC = () => {
   const [mergeSite, setMergeSite] = useState<{ id: number; name: string } | null>(null);
   const [mergeTargetId, setMergeTargetId] = useState('');
   const [deleteSite, setDeleteSite] = useState<{ id: number; name: string } | null>(null);
+  // Tag picked for project-wide deletion from inside a TagInput.
+  const [deleteTagTarget, setDeleteTagTarget] = useState<string | null>(null);
+  const [showMapSelect, setShowMapSelect] = useState(false);
 
   // Bulk-edit selection, shared hook with the cameras page.
   const {
@@ -173,6 +183,9 @@ export const SitesPage: React.FC = () => {
   const [showBulkRemoveTags, setShowBulkRemoveTags] = useState(false);
   const [showBulkSetHabitat, setShowBulkSetHabitat] = useState(false);
   const [showBulkSetNotes, setShowBulkSetNotes] = useState(false);
+  // Planning service from selected sites: the cameras at those sites now,
+  // and the names of selected sites that have none (a task needs a camera).
+  const [planFromSites, setPlanFromSites] = useState<{ cameraIds: number[]; notice?: string } | null>(null);
 
   // Visible columns persist per-browser, same pattern as the cameras table.
   const [visibleColumns, setVisibleColumns] = useState<SiteColumnId[]>(() => siteColumnPrefs.load());
@@ -363,6 +376,24 @@ export const SitesPage: React.FC = () => {
   // Shared success/error handlers for the bulk-edit mutations. On success:
   // refresh the sites queries, drop the selection (so the bar disappears),
   // and show a count toast. On error: show the API detail.
+  const planMutation = usePlanService(pid, () => {
+    setPlanFromSites(null);
+    clearSiteSelection();
+  });
+
+  const openPlanFromSites = () => {
+    const atSites = (cameras ?? []).filter((c) => c.current_site && selectedSiteIds.has(c.current_site.id));
+    const withCamera = new Set(atSites.map((c) => c.current_site!.id));
+    const empty = (sites ?? []).filter((site) => selectedSiteIds.has(site.id) && !withCamera.has(site.id));
+    setPlanFromSites({
+      cameraIds: atSites.map((c) => c.id),
+      notice:
+        empty.length > 0
+          ? `${empty.map((site) => site.name).join(', ')} ${empty.length === 1 ? 'has' : 'have'} no camera now and ${empty.length === 1 ? 'is' : 'are'} skipped.`
+          : undefined,
+    });
+  };
+
   const onBulkSuccess = (res: { updated_count: number }) => {
     invalidate();
     clearSiteSelection();
@@ -400,6 +431,56 @@ export const SitesPage: React.FC = () => {
     onSuccess: onBulkSuccess,
     onError: onBulkError,
   });
+
+  // Project-wide tag management, surfaced inside every TagInput on this
+  // page (site sheet and both bulk tag dialogs). Rename is one atomic call
+  // on the server and merges when the new name already exists; delete asks
+  // first, with the site count in the confirmation.
+  const renameTagMutation = useMutation({
+    mutationFn: ({ oldTag, newTag }: { oldTag: string; newTag: string }) =>
+      sitesApi.renameTag(pid, oldTag, newTag),
+    onSuccess: (res) => {
+      invalidate();
+      toast.success(
+        `Renamed the tag on ${res.updated_count} site${res.updated_count === 1 ? '' : 's'}`,
+      );
+    },
+    onError: (err: unknown) => toast.error(`Rename failed, ${errMsg(err)}`),
+  });
+  const deleteTagMutation = useMutation({
+    mutationFn: (tag: string) => sitesApi.deleteTag(pid, tag),
+    onSuccess: (res) => {
+      invalidate();
+      setDeleteTagTarget(null);
+      toast.success(
+        `Removed the tag from ${res.updated_count} site${res.updated_count === 1 ? '' : 's'}`,
+      );
+    },
+    onError: (err: unknown) => toast.error(`Delete failed, ${errMsg(err)}`),
+  });
+
+  const tagCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const site of sites ?? []) {
+      for (const tag of site.tags ?? []) counts[tag] = (counts[tag] ?? 0) + 1;
+    }
+    return counts;
+  }, [sites]);
+
+  const tagManagement = useMemo<TagManagement | undefined>(
+    () =>
+      canEdit
+        ? {
+            onRenameTag: (oldTag: string, newTag: string) =>
+              renameTagMutation.mutate({ oldTag, newTag }),
+            onDeleteTag: setDeleteTagTarget,
+            counts: tagCounts,
+            noun: 'site',
+          }
+        : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canEdit, tagCounts, renameTagMutation.mutate],
+  );
 
   const mergeMutation = useMutation({
     mutationFn: () => sitesApi.merge(pid, mergeSite!.id, Number(mergeTargetId)),
@@ -555,84 +636,69 @@ export const SitesPage: React.FC = () => {
               row (map view only) so it stays visible without a separate bar.
               The row wraps, so on phones the colour control drops to its
               own line instead of pushing off screen. */}
-          <div className="flex flex-wrap items-center justify-between gap-y-2 border-b">
-            <div className="flex">
-              <button
-                onClick={() => setViewMode('table')}
-                className={cn(
-                  'px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 transition-colors',
-                  viewMode === 'table'
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground',
+          <TabStrip
+            tabs={[
+              { key: 'table', label: 'Table', icon: TableIcon },
+              { key: 'map', label: 'Map', icon: MapIcon },
+            ]}
+            value={viewMode}
+            onChange={setViewMode}
+            extra={
+              <div className="flex flex-wrap items-center gap-2 pb-1">
+                {viewMode === 'map' && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">Colour</span>
+                    <div className="inline-flex rounded-md border divide-x overflow-hidden">
+                      {COLOR_MODES.map((m) => (
+                        <button
+                          key={m.value}
+                          onClick={() => setColorMode(m.value)}
+                          className={cn(
+                            'px-3 py-1.5 text-sm transition-colors',
+                            colorMode === m.value
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-background text-muted-foreground hover:text-foreground',
+                          )}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
-              >
-                <TableIcon className="h-4 w-4" />
-                Table
-              </button>
-              <button
-                onClick={() => setViewMode('map')}
-                className={cn(
-                  'px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 transition-colors',
-                  viewMode === 'map'
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground',
-                )}
-              >
-                <MapIcon className="h-4 w-4" />
-                Map
-              </button>
-            </div>
-            {viewMode === 'map' && (
-              <div className="flex items-center gap-2 pb-1">
-                <span className="text-sm text-muted-foreground">Colour</span>
-                <div className="inline-flex rounded-md border divide-x overflow-hidden">
-                  {COLOR_MODES.map((m) => (
-                    <button
-                      key={m.value}
-                      onClick={() => setColorMode(m.value)}
-                      className={cn(
-                        'px-3 py-1.5 text-sm transition-colors',
-                        colorMode === m.value
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-background text-muted-foreground hover:text-foreground',
-                      )}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
               </div>
-            )}
-          </div>
+            }
+          />
         </div>
       )}
 
       {/* Bulk-action bar. Only renders for admins with at least one site
-          selected. Sits between the toolbar and the table, same shape as
-          the cameras page's bulk bar. */}
-      {canEdit && selectedSiteIds.size > 0 && sites && sites.length > 0 && (
-        <div className="flex items-center gap-3 p-3 mb-3 bg-muted rounded-md flex-wrap">
-          <span className="text-sm font-medium">
-            {selectedSiteIds.size} of {sites.length} sites selected
-          </span>
-          <div className="flex gap-2 flex-wrap ml-auto">
-            <Button variant="outline" size="sm" onClick={() => setShowBulkAddTags(true)}>
-              Add tags
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkRemoveTags(true)}>
-              Remove tags
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkSetHabitat(true)}>
-              Set habitat
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowBulkSetNotes(true)}>
-              Set notes
-            </Button>
-            <Button variant="ghost" size="sm" onClick={clearSiteSelection}>
-              Cancel
-            </Button>
-          </div>
-        </div>
+          selected. Sits between the toolbar and the table, shared with the
+          cameras and service tables. */}
+      {/* Selection belongs to the table; the map tab is only for looking. */}
+      {canEdit && viewMode === 'table' && selectedSiteIds.size > 0 && sites && sites.length > 0 && (
+        <BulkActionBar
+          selected={selectedSiteIds.size}
+          total={sites.length}
+          noun="sites"
+          onClear={clearSiteSelection}
+        >
+          <Button variant="outline" size="sm" onClick={() => setShowBulkAddTags(true)}>
+            Add tags
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowBulkRemoveTags(true)}>
+            Remove tags
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowBulkSetHabitat(true)}>
+            Set habitat
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowBulkSetNotes(true)}>
+            Set notes
+          </Button>
+          <Button variant="outline" size="sm" onClick={openPlanFromSites}>
+            Plan service
+          </Button>
+        </BulkActionBar>
       )}
 
       {/* List / empty / loading */}
@@ -680,13 +746,17 @@ export const SitesPage: React.FC = () => {
                 <TableHeader>
                   <TableRow>
                     {canEdit && (
-                      <TableHead className="w-10">
-                        <SelectAllCheckbox
-                          visibleIds={sortedSites.map((s) => s.id)}
-                          selected={selectedSiteIds}
-                          onToggle={setSiteSelection}
-                          ariaLabel="Select all visible sites"
-                        />
+                      <TableHead className="w-20">
+                        {/* Every way of selecting lives in this one cell. */}
+                        <div className="flex items-center gap-1">
+                          <MapSelectButton onClick={() => setShowMapSelect(true)} />
+                          <SelectAllCheckbox
+                            visibleIds={sortedSites.map((s) => s.id)}
+                            selected={selectedSiteIds}
+                            onToggle={setSiteSelection}
+                            ariaLabel="Select all visible sites"
+                          />
+                        </div>
                       </TableHead>
                     )}
                     {visibleColumnDefs.map((col) => (
@@ -727,7 +797,7 @@ export const SitesPage: React.FC = () => {
                       onClick={() => setDetailSiteId(site.id)}
                     >
                       {canEdit && (
-                        <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>
+                        <TableCell className="w-10 pl-12" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             aria-label={`Select site ${site.name}`}
@@ -772,6 +842,7 @@ export const SitesPage: React.FC = () => {
           setMergeTargetId('');
         }}
         onDeleteRequested={setDeleteSite}
+        tagManagement={tagManagement}
       />
 
       {/* Bulk-edit dialogs. Suggestions for the remove dialog come from
@@ -785,6 +856,7 @@ export const SitesPage: React.FC = () => {
         isPending={bulkAddTagsMutation.isPending}
         suggestions={tagSuggestions ?? []}
         onConfirm={(tags) => bulkAddTagsMutation.mutate(tags)}
+        tagManagement={tagManagement}
       />
       <BulkRemoveTagsDialog
         open={showBulkRemoveTags}
@@ -800,6 +872,7 @@ export const SitesPage: React.FC = () => {
           ),
         ).sort()}
         onConfirm={(tags) => bulkRemoveTagsMutation.mutate(tags)}
+        tagManagement={tagManagement}
       />
       <BulkSetHabitatDialog
         open={showBulkSetHabitat}
@@ -809,6 +882,15 @@ export const SitesPage: React.FC = () => {
         isPending={bulkSetHabitatMutation.isPending}
         onConfirm={(habitat) => bulkSetHabitatMutation.mutate(habitat)}
       />
+      <PlanServiceDialog
+        open={planFromSites !== null}
+        onClose={() => setPlanFromSites(null)}
+        projectId={pid}
+        initialCameraIds={planFromSites?.cameraIds}
+        notice={planFromSites?.notice}
+        isPending={planMutation.isPending}
+        onConfirm={(cameraIds, fields) => planMutation.mutate({ cameraIds, fields })}
+      />
       <BulkSetNotesDialog
         open={showBulkSetNotes}
         onClose={() => setShowBulkSetNotes(false)}
@@ -817,6 +899,44 @@ export const SitesPage: React.FC = () => {
         isPending={bulkSetNotesMutation.isPending}
         placeholder="e.g. Clearing next to the river"
         onConfirm={(notes) => bulkSetNotesMutation.mutate(notes)}
+      />
+
+      {/* Map selection, feeding the same bulk selection as the checkboxes.
+          It shows the rows the table shows, so filters narrow it too. */}
+      <MapSelectDialog
+        open={showMapSelect}
+        onClose={() => setShowMapSelect(false)}
+        noun="site"
+        items={sortedSites.map((site) => ({
+          id: site.id,
+          label: site.name,
+          latitude: site.latitude,
+          longitude: site.longitude,
+        }))}
+        initialSelected={selectedSiteIds}
+        onConfirm={(on, off) => {
+          setSiteSelection(off, false);
+          setSiteSelection(on, true);
+        }}
+      />
+
+      {/* Project-wide tag delete, requested from inside a TagInput */}
+      <ConfirmDialog
+        open={deleteTagTarget != null}
+        onClose={() => setDeleteTagTarget(null)}
+        onConfirm={() => deleteTagTarget && deleteTagMutation.mutate(deleteTagTarget)}
+        title="Delete tag everywhere"
+        body={
+          deleteTagTarget
+            ? `Removes "${deleteTagTarget}" from ${tagCounts[deleteTagTarget] ?? 0} site${
+                (tagCounts[deleteTagTarget] ?? 0) === 1 ? '' : 's'
+              }. The sites keep their other tags.`
+            : undefined
+        }
+        confirmLabel="Delete everywhere"
+        variant="destructive"
+        focusCancel
+        isPending={deleteTagMutation.isPending}
       />
 
       {/* Merge dialog */}

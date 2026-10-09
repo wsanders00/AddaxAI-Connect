@@ -130,9 +130,11 @@ class TestMapQuerySource:
     """Source-level guards, same convention as test_map_multi_species.py."""
 
     def _source(self):
+        # The query lives in fetch_site_buckets, shared between the map
+        # endpoint and the spatial export.
         from routers import statistics
 
-        return inspect.getsource(statistics.get_detection_rate_map)
+        return inspect.getsource(statistics.fetch_site_buckets)
 
     def test_all_three_branches_group_by_species(self):
         src = self._source()
@@ -144,6 +146,11 @@ class TestMapQuerySource:
     def test_species_filter_clauses_untouched(self):
         src = self._source()
         assert src.count("= ANY(CAST(:species_list AS text[]))") == 3
+
+    def test_hidden_images_left_out_of_every_branch(self):
+        # Hidden means hidden from analysis; the old spatial export dropped
+        # them and the map and export share this query.
+        assert self._source().count("AND i.is_hidden = FALSE") == 3
 
     def test_pooling_goes_through_the_helper(self):
         src = self._source()

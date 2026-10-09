@@ -10,12 +10,12 @@
  * sub-100 m sites exist (e.g. cameras on one pole), so overlapping pins
  * spiderfy out.
  */
-import { useMemo, useEffect, useRef } from 'react';
+import { useMemo, useEffect } from 'react';
 import { MapContainer, Marker, Tooltip, useMap } from 'react-leaflet';
-import { latLngBounds } from 'leaflet';
 import L from 'leaflet';
 import type { SiteListItem } from '../../api/sites';
 import { FullscreenControl } from '../map/FullscreenControl';
+import { FitBounds } from '../map/FitBounds';
 import { BaseLayersControl, MapAttribution, MAP_MAX_ZOOM } from '../map/BaseLayersControl';
 import { SpiderLegLine } from '../map/SpiderLegLine';
 import { useSpiderfied } from '../../hooks/useSpiderfied';
@@ -144,17 +144,6 @@ function SiteMapLegend({ colorMode }: { colorMode: ColorByMetric }) {
       legend.remove();
     };
   }, [map, colorMode]);
-  return null;
-}
-
-function FitBounds({ points }: { points: [number, number][] }) {
-  const map = useMap();
-  const fitted = useRef(false);
-  useEffect(() => {
-    if (points.length === 0 || fitted.current) return;
-    map.fitBounds(latLngBounds(points), { padding: [30, 30] });
-    fitted.current = true;
-  }, [points, map]);
   return null;
 }
 
