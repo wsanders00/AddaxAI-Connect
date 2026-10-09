@@ -23,12 +23,16 @@ import os
 import signal
 import sys
 import tempfile
+import time
 import uuid
 import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
+import redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 # Vendored copy of the live ingestion service. Same Python module path
 # as ingestion uses internally so the imports below work unchanged.
 sys.path.insert(0, "/ingestion_lib")
@@ -39,6 +43,7 @@ from sqlalchemy import func, select, text
 
 from shared.bulk_jobs import is_bulk_job_cancelled
 from shared.camera_profiles import identify_camera_profile
+from shared.config import get_settings
 from shared.database import get_db_session
 from shared.logger import get_logger, set_image_id
 from shared.models import BulkUploadJob, Camera, Image
@@ -46,6 +51,7 @@ from shared.queue import (
     QUEUE_BULK_UPLOAD_JOB,
     QUEUE_BULK_UPLOAD_JOB_PROCESS,
     QUEUE_IMAGE_INGESTED_BULK,
+    HEARTBEAT_KEY_BULK_UPLOAD,
     RedisQueue,
 )
 from shared.storage import BUCKET_BULK_UPLOAD_STAGING, StorageClient
@@ -68,6 +74,64 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 # enough that legitimate slow disks finish but tight enough that one
 # bad frame does not eat the whole batch.
 PER_FILE_TIMEOUT_SECONDS = 60
+PROGRESS_HEARTBEAT_RETRY_SECONDS = 5
+
+
+def _new_progress_redis():
+    """Create a short-timeout client used only for best-effort progress stamps."""
+    return redis.Redis.from_url(
+        get_settings().redis_url,
+        decode_responses=True,
+        socket_connect_timeout=0.25,
+        socket_timeout=0.5,
+        retry=Retry(NoBackoff(), retries=0),
+        retry_on_timeout=False,
+    )
+
+
+def _heartbeat_progress(items):
+    """Stamp liveness only after a real unit of bulk work has completed.
+
+    Yield before stamping so a blocked item does not keep the worker looking
+    alive. Redis trouble is best-effort: it must not fail otherwise valid
+    import work. Warn once per consecutive failure streak without including
+    connection details. Failed writes are retried only after a short
+    cooldown, and only when another item actually completes.
+    """
+    client = None
+    warned = False
+    retry_after = 0.0
+    try:
+        for item in items:
+            yield item
+            if time.monotonic() < retry_after:
+                continue
+            try:
+                if client is None:
+                    client = _new_progress_redis()
+                client.set(
+                    HEARTBEAT_KEY_BULK_UPLOAD,
+                    datetime.now(timezone.utc).isoformat(),
+                )
+                warned = False
+            except Exception:
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                client = None
+                retry_after = time.monotonic() + PROGRESS_HEARTBEAT_RETRY_SECONDS
+                if not warned:
+                    logger.warning("Bulk worker progress heartbeat could not be written")
+                    warned = True
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                if not warned:
+                    logger.warning("Bulk worker progress heartbeat client could not be closed")
 
 
 class _FileTimeout(Exception):
@@ -408,7 +472,7 @@ def _inspect_job(job_uuid: str) -> None:
             ]
             total_entries = len(entries)
 
-            for info in entries:
+            for info in _heartbeat_progress(entries):
                 tmp_path: Optional[str] = None
                 try:
                     raw = zf.read(info)
@@ -679,7 +743,7 @@ def _process_prefix_job(
             )
             row.total_files = actual_count
 
-    for idx, key in enumerate(object_keys, start=1):
+    for idx, key in enumerate(_heartbeat_progress(object_keys), start=1):
         # Object key shape: "{project_id}/{job_uuid}/{idx:06d}_{name}".
         # Recover the human filename for logs and storage paths.
         tail = key.rsplit("/", 1)[-1]
@@ -807,7 +871,7 @@ def _process_legacy_zip_job(
                 info for info in zf.infolist()
                 if not info.is_dir() and not _is_noise_entry(info.filename)
             ]
-            for idx, info in enumerate(entries, start=1):
+            for idx, info in enumerate(_heartbeat_progress(entries), start=1):
                 try:
                     raw = zf.read(info)
                     with _file_timeout(PER_FILE_TIMEOUT_SECONDS):
@@ -1095,7 +1159,9 @@ def main() -> None:
     queue = RedisQueue(QUEUE_BULK_UPLOAD_JOB)
     priority = [QUEUE_BULK_UPLOAD_JOB_PROCESS, QUEUE_BULK_UPLOAD_JOB]
     logger.info("Listening on priority queues", queues=priority)
-    queue.consume_forever_priority(priority, dispatch)
+    queue.consume_forever_priority(
+        priority, dispatch, heartbeat_key=HEARTBEAT_KEY_BULK_UPLOAD
+    )
 
 
 if __name__ == "__main__":

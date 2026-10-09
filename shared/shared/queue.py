@@ -257,6 +257,7 @@ HEARTBEAT_KEY_NOTIFICATIONS_TELEGRAM = "heartbeat:notifications-telegram"
 HEARTBEAT_KEY_NOTIFICATIONS_EARTHRANGER = "heartbeat:notifications-earthranger"
 HEARTBEAT_KEY_NOTIFICATIONS_SENSINGCLUES = "heartbeat:notifications-sensingclues"
 HEARTBEAT_KEY_INGESTION = "heartbeat:ingestion"
+HEARTBEAT_KEY_BULK_UPLOAD = "heartbeat:bulk-upload"
 HEARTBEAT_KEY_DETECTION = "heartbeat:detection"
 # One key for both classifiers. A server runs deepfaune or speciesnet,
 # never both, and the health page has a single "classification" row.

@@ -13,6 +13,7 @@ from shared.queue import (
     QUEUE_NOTIFICATION_TELEGRAM,
     QUEUE_NOTIFICATION_EMAIL,
     HEARTBEAT_KEY_INGESTION,
+    HEARTBEAT_KEY_BULK_UPLOAD,
     HEARTBEAT_KEY_DETECTION,
     HEARTBEAT_KEY_CLASSIFICATION,
     HEARTBEAT_KEY_NOTIFICATIONS,
@@ -46,6 +47,7 @@ def test_heartbeat_keys_are_unique():
     """
     keys = [
         HEARTBEAT_KEY_INGESTION,
+        HEARTBEAT_KEY_BULK_UPLOAD,
         HEARTBEAT_KEY_DETECTION,
         HEARTBEAT_KEY_CLASSIFICATION,
         HEARTBEAT_KEY_NOTIFICATIONS,
@@ -151,8 +153,26 @@ def test_consume_forever_priority_stamps_heartbeat_each_iteration():
     assert fake.brpop_timeouts == [HEARTBEAT_TICK_SECONDS, HEARTBEAT_TICK_SECONDS]
 
 
+def test_consume_forever_priority_stamps_bulk_upload_key_on_idle_wakeup():
+    """The manual-import worker uses the real priority loop heartbeat."""
+    queue = RedisQueue(QUEUE_IMAGE_INGESTED)
+    fake = FakeRedisClient([None, (QUEUE_IMAGE_INGESTED, json.dumps({"x": 1}))])
+    queue.client = fake
+
+    def callback(message):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        queue.consume_forever_priority(
+            PRIORITY, callback, heartbeat_key=HEARTBEAT_KEY_BULK_UPLOAD
+        )
+
+    assert len(fake.set_calls) == 2
+    assert all(key == HEARTBEAT_KEY_BULK_UPLOAD for key, _ in fake.set_calls)
+    assert fake.brpop_timeouts == [HEARTBEAT_TICK_SECONDS, HEARTBEAT_TICK_SECONDS]
+
+
 def test_consume_forever_priority_without_heartbeat_never_stamps():
-    """The bulk-upload worker passes no key and must keep working."""
     queue = RedisQueue(QUEUE_IMAGE_INGESTED)
     fake = FakeRedisClient([(QUEUE_IMAGE_INGESTED, json.dumps({"x": 1}))])
     queue.client = fake

@@ -5,7 +5,7 @@ import apiClient from './client';
 
 export interface ServiceStatus {
   name: string;
-  status: 'healthy' | 'unhealthy';
+  status: 'healthy' | 'unhealthy' | 'disabled' | 'not_configured';
   message: string;
   /** "cpu" or "cuda" for a healthy ML worker, absent for everything else */
   device?: string | null;

@@ -67,6 +67,28 @@ def _get_boto_client():
     return _shared_client
 
 
+def create_health_check_client():
+    """Build an S3 client with strict network bounds for health probes.
+
+    Keep these short timeouts and disabled retries local to the health check;
+    changing the shared data client would alter upload/download behavior.
+    """
+    return boto3.client(
+        's3',
+        endpoint_url=f"http://{settings.minio_endpoint}",
+        aws_access_key_id=settings.minio_access_key,
+        aws_secret_access_key=settings.minio_secret_key,
+        config=Config(
+            signature_version='s3v4',
+            s3={'addressing_style': 'path'},
+            connect_timeout=2,
+            read_timeout=2,
+            retries={'total_max_attempts': 1},
+        ),
+        region_name='us-east-1',
+    )
+
+
 class StorageClient:
     """
     MinIO/S3 client wrapper.

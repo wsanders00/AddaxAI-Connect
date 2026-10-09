@@ -1,327 +1,365 @@
-"""
-Health check endpoints for monitoring system services.
-
-Provides service status information for server admins.
-"""
+"""Health checks for deployed services (server admins only)."""
+import asyncio
 import json
+import math
 import os
-from datetime import datetime, timezone
+import sys
+from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
-import httpx
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from urllib.parse import urlsplit
 
-from shared.models import User
+import httpx
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from auth.permissions import require_server_admin
 from shared.database import get_async_session
 from shared.logger import get_logger
+from shared.models import User
 from shared.queue import (
-    RedisQueue,
-    QUEUE_IMAGE_INGESTED,
-    QUEUE_DETECTION_COMPLETE,
-    QUEUE_NOTIFICATION_EVENTS,
-    QUEUE_NOTIFICATION_EMAIL,
-    QUEUE_NOTIFICATION_TELEGRAM,
-    QUEUE_NOTIFICATION_EARTHRANGER,
-    QUEUE_NOTIFICATION_SENSINGCLUES,
-    HEARTBEAT_KEY_INGESTION,
-    HEARTBEAT_KEY_DETECTION,
-    HEARTBEAT_KEY_CLASSIFICATION,
-    DEVICE_KEY_DETECTION,
     DEVICE_KEY_CLASSIFICATION,
+    DEVICE_KEY_DETECTION,
+    HEARTBEAT_KEY_BULK_UPLOAD,
+    HEARTBEAT_KEY_CLASSIFICATION,
+    HEARTBEAT_KEY_DETECTION,
+    HEARTBEAT_KEY_INGESTION,
     HEARTBEAT_KEY_NOTIFICATIONS,
-    HEARTBEAT_KEY_NOTIFICATIONS_EMAIL,
-    HEARTBEAT_KEY_NOTIFICATIONS_TELEGRAM,
     HEARTBEAT_KEY_NOTIFICATIONS_EARTHRANGER,
+    HEARTBEAT_KEY_NOTIFICATIONS_EMAIL,
     HEARTBEAT_KEY_NOTIFICATIONS_SENSINGCLUES,
+    HEARTBEAT_KEY_NOTIFICATIONS_TELEGRAM,
     HEARTBEAT_STALE_AFTER_MINUTES,
+    QUEUE_DETECTION_COMPLETE,
+    QUEUE_IMAGE_INGESTED,
+    QUEUE_NOTIFICATION_EARTHRANGER,
+    QUEUE_NOTIFICATION_EMAIL,
+    QUEUE_NOTIFICATION_EVENTS,
+    QUEUE_NOTIFICATION_SENSINGCLUES,
+    QUEUE_NOTIFICATION_TELEGRAM,
     parse_heartbeat,
 )
-from auth.permissions import require_server_admin
 
-router = APIRouter(prefix="/api/health", tags=["health"])
 logger = get_logger("api.health")
+
+HEALTH_CHECK_TIMEOUT_SECONDS = 2.5
+HEALTH_ROUTE_TIMEOUT_SECONDS = 8.0
+HEALTH_CHILD_TIMEOUT_SECONDS = 4.0
+HEALTH_FRONTEND_TOTAL_TIMEOUT_SECONDS = 2.5
+BACKUP_STATUS_MAX_AGE = timedelta(days=3)
+HEALTH_PROBE_MODULE = "shared.health_probe"
+WORKER_HEARTBEATS = {
+    "ingestion": (HEARTBEAT_KEY_INGESTION, None, None),
+    "bulk-upload": (HEARTBEAT_KEY_BULK_UPLOAD, None, None),
+    "detection": (HEARTBEAT_KEY_DETECTION, QUEUE_IMAGE_INGESTED, DEVICE_KEY_DETECTION),
+    "classification": (HEARTBEAT_KEY_CLASSIFICATION, QUEUE_DETECTION_COMPLETE, DEVICE_KEY_CLASSIFICATION),
+    "notifications": (HEARTBEAT_KEY_NOTIFICATIONS, QUEUE_NOTIFICATION_EVENTS, None),
+    "notifications-email": (HEARTBEAT_KEY_NOTIFICATIONS_EMAIL, QUEUE_NOTIFICATION_EMAIL, None),
+    "notifications-telegram": (HEARTBEAT_KEY_NOTIFICATIONS_TELEGRAM, QUEUE_NOTIFICATION_TELEGRAM, None),
+    "notifications-earthranger": (HEARTBEAT_KEY_NOTIFICATIONS_EARTHRANGER, QUEUE_NOTIFICATION_EARTHRANGER, None),
+    "notifications-sensingclues": (HEARTBEAT_KEY_NOTIFICATIONS_SENSINGCLUES, QUEUE_NOTIFICATION_SENSINGCLUES, None),
+}
+_health_child_slots = asyncio.Semaphore(1)
+
+
+class HealthProbeRoute(APIRoute):
+    """Put one deadline around the whole health request, including auth deps."""
+
+    def get_route_handler(self):
+        original_handler = super().get_route_handler()
+
+        async def bounded_handler(request: Request):
+            try:
+                async with asyncio.timeout(HEALTH_ROUTE_TIMEOUT_SECONDS):
+                    return await original_handler(request)
+            except TimeoutError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Health request timed out"},
+                )
+
+        return bounded_handler
+
+
+# The route class has to be defined before constructing its router.
+router = APIRouter(prefix="/api/health", tags=["health"], route_class=HealthProbeRoute)
 
 
 class ServiceStatus(BaseModel):
-    """Status information for a single service"""
+    """Status information for one service."""
+
     name: str
-    status: Literal["healthy", "unhealthy"]
+    status: Literal["healthy", "unhealthy", "disabled"]
     message: str
-    # "cpu" or "cuda" for the ML workers, only while healthy. None elsewhere.
+    # "cpu" or "cuda" for healthy ML workers; absent otherwise.
     device: Optional[str] = None
 
 
 class ServicesHealthResponse(BaseModel):
-    """Response containing status of all services"""
     services: List[ServiceStatus]
 
 
+def _status(name: str, status: str, message: str, device: Optional[str] = None) -> ServiceStatus:
+    return ServiceStatus(name=name, status=status, message=message, device=device)
+
+
+def _probe_ok(probe: Optional[dict], key: str) -> bool:
+    return isinstance(probe, dict) and probe.get(key) is True
+
+
 async def check_postgres(db: AsyncSession) -> ServiceStatus:
-    """Check PostgreSQL database connectivity"""
+    """Use server-side statement timeout and an async deadline for SELECT 1."""
     try:
-        result = await db.execute(text("SELECT 1"))
-        result.scalar()
-        return ServiceStatus(
-            name="postgres",
-            status="healthy",
-            message="Database connection successful"
-        )
-    except Exception as e:
-        logger.error("PostgreSQL health check failed", error=str(e))
-        return ServiceStatus(
-            name="postgres",
-            status="unhealthy",
-            message=f"Database error: {str(e)}"
-        )
+        async with asyncio.timeout(HEALTH_CHECK_TIMEOUT_SECONDS):
+            # This transaction-scoped setting does not affect other sessions
+            # or application queries and also bounds the database-side work.
+            await db.execute(text("SELECT set_config('statement_timeout', '2000ms', true)"))
+            await db.execute(text("SELECT 1"))
+        return _status("postgres", "healthy", "Database connection successful")
+    except Exception as exc:
+        logger.warning("PostgreSQL health check failed", error_type=type(exc).__name__)
+        return _status("postgres", "unhealthy", "Database check failed or timed out")
 
 
-def check_redis() -> ServiceStatus:
-    """Check Redis connectivity"""
+def _frontend_health_url() -> Optional[str]:
+    raw = os.environ.get("FRONTEND_HEALTH_URL", "").strip()
+    if not raw:
+        return None
     try:
-        queue = RedisQueue("health-check")
-        queue.client.ping()
-        return ServiceStatus(
-            name="redis",
-            status="healthy",
-            message="Redis connection successful"
-        )
-    except Exception as e:
-        logger.error("Redis health check failed", error=str(e))
-        return ServiceStatus(
-            name="redis",
-            status="unhealthy",
-            message=f"Redis error: {str(e)}"
-        )
+        parsed = urlsplit(raw)
+        _ = parsed.port  # Access validates malformed port text.
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+    except ValueError:
+        return None
+    return raw
 
 
-async def check_http_service(name: str, url: str) -> ServiceStatus:
-    """Check HTTP service availability"""
+async def check_frontend() -> ServiceStatus:
+    url = _frontend_health_url()
+    if url is None:
+        return _status("frontend", "unhealthy", "Frontend health URL is missing or invalid")
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(url)
-            if response.status_code < 500:
-                return ServiceStatus(
-                    name=name,
-                    status="healthy",
-                    message=f"Service responding (HTTP {response.status_code})"
-                )
-            else:
-                return ServiceStatus(
-                    name=name,
-                    status="unhealthy",
-                    message=f"Service error (HTTP {response.status_code})"
-                )
-    except httpx.TimeoutException:
-        logger.warning("HTTP health check timeout", service=name, url=url)
-        return ServiceStatus(
-            name=name,
-            status="unhealthy",
-            message="Connection timeout"
-        )
-    except Exception as e:
-        logger.error("HTTP health check failed", service=name, url=url, error=str(e))
-        return ServiceStatus(
-            name=name,
-            status="unhealthy",
-            message=f"Connection failed: {str(e)}"
-        )
+        timeout = httpx.Timeout(2.0, connect=1.0)
+        async with asyncio.timeout(HEALTH_FRONTEND_TOTAL_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.get(url)
+        if response.status_code == 200:
+            return _status("frontend", "healthy", "Frontend returned HTTP 200")
+        return _status("frontend", "unhealthy", f"Frontend returned HTTP {response.status_code}")
+    except Exception as exc:
+        logger.warning("Frontend health check failed", error_type=type(exc).__name__)
+        return _status("frontend", "unhealthy", "Frontend connection failed or timed out")
 
 
-def check_cold_tier_watchdog() -> ServiceStatus:
-    """Check cold-tier watchdog status from Redis.
+def _enabled_workers() -> tuple[Optional[set[str]], Optional[str]]:
+    raw = os.environ.get("HEALTH_ENABLED_WORKERS")
+    if raw is None or not raw.strip():
+        return None, "Worker expectation configuration is missing"
+    names = [part.strip() for part in raw.split(",")]
+    if any(not name for name in names) or len(names) != len(set(names)):
+        return None, "Worker expectation configuration is malformed"
+    unknown = set(names) - set(WORKER_HEARTBEATS)
+    if unknown:
+        return None, "Worker expectation configuration contains unknown names"
+    return set(names), None
 
-    The watchdog writes `cold_tier:status` on every tick with a TTL of
-    3x its tick interval. A missing key means the watchdog hasn't ticked
-    recently (container down or Wasabi unreachable for multiple cycles).
-    """
+
+def _disabled(name: str, reason: str) -> ServiceStatus:
+    return _status(name, "disabled", reason)
+
+
+async def _run_probe_process(argv: list[str], payload: bytes, timeout: float) -> Optional[bytes]:
+    """Run and reap an owned subprocess; never leave timed-out work behind."""
+    async def kill_and_reap(process):
+        if process.returncode is None:
+            process.kill()
+        cleanup = asyncio.create_task(process.wait())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+
+    process = None
     try:
-        queue = RedisQueue("health-check")
-        raw = queue.client.get("cold_tier:status")
-        if not raw:
-            return ServiceStatus(
-                name="cold-tier-watchdog",
-                status="unhealthy",
-                message="No recent status in Redis (watchdog down or never ticked)",
-            )
-        payload = json.loads(raw)
-        state = payload.get("status")
-        if state == "idle":
-            return ServiceStatus(
-                name="cold-tier-watchdog",
-                status="healthy",
-                message="Cold tier disabled (COLD_TIER_ENABLED=false)",
-            )
-        if state == "ok":
-            hot_gb = payload.get("hot_gb", "?")
-            budget_gb = payload.get("budget_gb", "?")
-            objects_hot = payload.get("objects_hot", 0)
-            objects_cold = payload.get("objects_cold", 0)
-            total = objects_hot + objects_cold
-            pct_cold = (objects_cold / total * 100) if total else 0.0
-            ts = payload.get("timestamp", "?")
-            # Over budget right after a tick is normal, the objects were
-            # tagged seconds ago and MinIO has not run its scanner yet. Say
-            # so, otherwise a healthy row reads as a contradiction.
-            waiting = (
-                ", tagged and waiting for the storage scanner to move them"
-                if payload.get("waiting_for_ilm") else ""
-            )
-            return ServiceStatus(
-                name="cold-tier-watchdog",
-                status="healthy",
-                message=(
-                    f"Last tick {ts}: "
-                    f"{hot_gb} GB used of {budget_gb} GB budget, "
-                    f"{objects_hot} hot / {objects_cold} cold ({pct_cold:.1f}% cold)"
-                    f"{waiting}"
-                ),
-            )
-        err = payload.get("error", "unknown error")
-        return ServiceStatus(
-            name="cold-tier-watchdog",
-            status="unhealthy",
-            message=f"Last tick failed: {err}",
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
-    except Exception as e:
-        logger.error("Cold-tier watchdog health check failed", error=str(e))
-        return ServiceStatus(
-            name="cold-tier-watchdog",
-            status="unhealthy",
-            message=f"Redis error: {str(e)}",
-        )
+        stdout, _ = await asyncio.wait_for(process.communicate(payload), timeout=timeout)
+        if process.returncode != 0 or len(stdout) > 16_384:
+            return None
+        return stdout
+    except TimeoutError:
+        if process is not None:
+            await kill_and_reap(process)
+        return None
+    except BaseException:
+        if process is not None:
+            # Reap the owned child even when the request task is cancelled.
+            await kill_and_reap(process)
+        raise
 
 
-def check_backup() -> ServiceStatus:
-    """Check automated backup status from Redis.
-
-    The host-side backup script writes `backup:last_run` on every run with a
-    3-day TTL. A missing key when backups are enabled means the cron hasn't
-    run in ~3 days (failure or misconfiguration).
-    """
-    enabled = os.environ.get("BACKUP_ENABLED", "false").lower() == "true"
+async def _run_health_probe(workers: set[str], backup: bool, cold_tier: bool) -> Optional[dict]:
+    """Run bounded sync network probes in a disposable child process."""
+    acquired = False
     try:
-        queue = RedisQueue("health-check")
-        raw = queue.client.get("backup:last_run")
-        if not raw:
-            if not enabled:
-                return ServiceStatus(
-                    name="backup",
-                    status="healthy",
-                    message="Backups disabled (BACKUP_ENABLED=false)",
-                )
-            return ServiceStatus(
-                name="backup",
-                status="unhealthy",
-                message="No recent backup run (last expected at 02:00 UTC)",
-            )
-        payload = json.loads(raw)
-        state = payload.get("status")
-        ts = payload.get("timestamp", "?")
-        duration = payload.get("duration_s", "?")
-        if state == "ok":
-            return ServiceStatus(
-                name="backup",
-                status="healthy",
-                message=f"Last backup {ts} (took {duration}s)",
-            )
-        if state == "skipped":
-            # Backup deliberately skipped (restore in progress or freshly
-            # provisioned server). Surface as healthy with the reason so the
-            # health page does not look broken in those windows.
-            reason = payload.get("error", "skipped")
-            return ServiceStatus(
-                name="backup",
-                status="healthy",
-                message=f"Backup skipped at {ts}: {reason}",
-            )
-        err = payload.get("error", "unknown error")
-        return ServiceStatus(
-            name="backup",
-            status="unhealthy",
-            message=f"Last backup failed at {ts}: {err}",
-        )
-    except Exception as e:
-        logger.error("Backup health check failed", error=str(e))
-        return ServiceStatus(
-            name="backup",
-            status="unhealthy",
-            message=f"Redis error: {str(e)}",
-        )
+        await asyncio.wait_for(_health_child_slots.acquire(), timeout=0.05)
+        acquired = True
+    except TimeoutError:
+        return None
 
-
-def check_heartbeat(
-    name: str,
-    heartbeat_key: str,
-    queue_name: Optional[str] = None,
-    device_key: Optional[str] = None,
-) -> ServiceStatus:
-    """
-    Check a worker through its Redis heartbeat.
-
-    The worker stamps the key at the top of every loop iteration (see
-    shared.queue.consume_forever and consume_forever_priority), so a
-    fresh stamp proves the loop is actually alive. An earlier version of
-    this endpoint asked whether the worker's queue was readable, which
-    only ever caught Redis being down: it reported three workers healthy
-    on a server running none of them.
-
-    With a queue_name the message carries the backlog waiting for that
-    worker. Ingestion has none to report, it watches the filesystem and
-    publishes rather than consumes, and naming the queue it publishes to
-    would show the detection backlog on the ingestion row.
-
-    With a device_key the row carries the device the ML worker loaded its
-    model on (see RedisQueue.record_device), but only when the row is
-    healthy. The key has no TTL, so on a dead worker it would repeat what
-    was true before the crash.
-    """
     try:
-        queue = RedisQueue(queue_name or "health-check")
-        depth = queue.queue_depth() if queue_name else None
-        # Same tolerant parse as the delivery liveness check, so a
-        # missing key and an unreadable value classify identically
-        last_seen = parse_heartbeat(queue.client.get(heartbeat_key))
-        if last_seen is None:
-            return ServiceStatus(
-                name=name,
-                status="unhealthy",
-                message="No heartbeat recorded (worker never started)",
-            )
-        age = datetime.now(timezone.utc) - last_seen
-        age_seconds = int(age.total_seconds())
-        if age_seconds < 0:
-            # A stamp from the future means clock skew, not an outage
-            age_label = "just now"
-        elif age_seconds < 120:
-            age_label = f"{age_seconds} s ago"
+        payload = json.dumps(
+            {"workers": sorted(workers), "backup": backup, "cold_tier": cold_tier},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        stdout = await _run_probe_process(
+            [sys.executable, "-m", HEALTH_PROBE_MODULE],
+            payload,
+            HEALTH_CHILD_TIMEOUT_SECONDS,
+        )
+        if stdout is None:
+            return None
+        result = json.loads(stdout)
+        if not isinstance(result, dict) or result.get("probe_failed"):
+            return None
+        return result
+    except Exception as exc:
+        logger.warning("Health probe process failed", error_type=type(exc).__name__)
+        return None
+    finally:
+        if acquired:
+            _health_child_slots.release()
+
+
+def _heartbeat_status(name: str, snapshot: Optional[dict], redis_ok: bool) -> ServiceStatus:
+    if not redis_ok or not isinstance(snapshot, dict):
+        return _status(name, "unhealthy", "Redis health snapshot unavailable")
+    stamp = parse_heartbeat(snapshot.get("stamp"))
+    if stamp is None:
+        return _status(name, "unhealthy", "No heartbeat recorded (worker never started)")
+    age = datetime.now(timezone.utc) - stamp
+    if age < timedelta(seconds=-60):
+        return _status(name, "unhealthy", "Worker heartbeat is in the future")
+    if age > timedelta(minutes=HEARTBEAT_STALE_AFTER_MINUTES):
+        return _status(
+            name,
+            "unhealthy",
+            f"Heartbeat stale (threshold {HEARTBEAT_STALE_AFTER_MINUTES} minutes)",
+        )
+    age_seconds = max(0, int(age.total_seconds()))
+    age_label = f"{age_seconds} seconds ago" if age_seconds < 120 else f"{age_seconds // 60} minutes ago"
+    depth = snapshot.get("depth")
+    depth_label = f"; queue depth {depth}" if isinstance(depth, int) and not isinstance(depth, bool) else ""
+    device = snapshot.get("device") if snapshot.get("device") in ("cpu", "cuda") else None
+    return _status(name, "healthy", f"Heartbeat {age_label}{depth_label}", device)
+
+
+def _worker_statuses(enabled: Optional[set[str]], config_error: Optional[str], probe: Optional[dict]) -> list[ServiceStatus]:
+    if config_error or enabled is None:
+        reason = config_error or "Worker expectation configuration is invalid"
+        return [_status(name, "unhealthy", reason) for name in WORKER_HEARTBEATS]
+    redis_ok = _probe_ok(probe, "redis_ok")
+    snapshots = probe.get("workers", {}) if probe else {}
+    results = []
+    for name in WORKER_HEARTBEATS:
+        if name not in enabled:
+            results.append(_disabled(name, "Not deployed by this configuration"))
         else:
-            age_label = f"{age_seconds // 60} min ago"
-        depth_label = f" (queue depth {depth})" if depth is not None else ""
-        if age.total_seconds() > HEARTBEAT_STALE_AFTER_MINUTES * 60:
-            return ServiceStatus(
-                name=name,
-                status="unhealthy",
-                message=(
-                    f"Last heartbeat {age_label}, stale after "
-                    f"{HEARTBEAT_STALE_AFTER_MINUTES} min{depth_label}"
-                ),
-            )
-        device = queue.client.get(device_key) if device_key else None
-        return ServiceStatus(
-            name=name,
-            status="healthy",
-            message=f"Last heartbeat {age_label}{depth_label}",
-            device=device,
-        )
-    except Exception as e:
-        logger.error("Heartbeat health check failed", service=name, error=str(e))
-        return ServiceStatus(
-            name=name,
-            status="unhealthy",
-            message=f"Heartbeat check error: {str(e)}",
-        )
+            snapshot = snapshots.get(name) if isinstance(snapshots, dict) else None
+            results.append(_heartbeat_status(name, snapshot, redis_ok))
+    return results
+
+
+def _parse_timestamp(value) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def _recent_timestamp(value, max_age: timedelta) -> bool:
+    stamp = _parse_timestamp(value)
+    if stamp is None:
+        return False
+    age = datetime.now(timezone.utc) - stamp
+    return timedelta(0) <= age <= max_age
+
+
+def _feature_snapshot(probe: Optional[dict], key: str, redis_ok: bool):
+    if not redis_ok or not isinstance(probe, dict):
+        return None
+    value = probe.get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _valid_number(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def check_cold_tier_watchdog(probe: Optional[dict]) -> ServiceStatus:
+    if os.environ.get("COLD_TIER_ENABLED", "false").lower() != "true":
+        return _disabled("cold-tier-watchdog", "Cold tier is disabled")
+    redis_ok = _probe_ok(probe, "redis_ok")
+    snapshot = _feature_snapshot(probe, "cold_tier", redis_ok)
+    if not snapshot or not snapshot.get("present") or not snapshot.get("valid"):
+        return _status("cold-tier-watchdog", "unhealthy", "Watchdog status is missing or invalid")
+    try:
+        max_age = timedelta(seconds=max(300, int(os.environ.get("COLD_TIER_TICK_SECONDS", "86400")) * 3))
+    except ValueError:
+        return _status("cold-tier-watchdog", "unhealthy", "Watchdog interval configuration is invalid")
+    if not _recent_timestamp(snapshot.get("timestamp"), max_age):
+        return _status("cold-tier-watchdog", "unhealthy", "Watchdog status is stale or has an invalid timestamp")
+    if snapshot.get("status") != "ok":
+        return _status("cold-tier-watchdog", "unhealthy", "Last watchdog check failed")
+    fields = ("hot_gb", "budget_gb", "objects_hot", "objects_cold")
+    if any(
+        not _valid_number(snapshot.get(field))
+        for field in fields
+    ):
+        return _status("cold-tier-watchdog", "unhealthy", "Watchdog status is invalid")
+    return _status("cold-tier-watchdog", "healthy", "Recent watchdog check succeeded")
+
+
+def check_backup(probe: Optional[dict]) -> ServiceStatus:
+    if os.environ.get("BACKUP_ENABLED", "false").lower() != "true":
+        return _disabled("backup", "Automated backups are disabled")
+    redis_ok = _probe_ok(probe, "redis_ok")
+    snapshot = _feature_snapshot(probe, "backup", redis_ok)
+    if not snapshot or not snapshot.get("present") or not snapshot.get("valid"):
+        return _status("backup", "unhealthy", "Backup status is missing or invalid")
+    if not _recent_timestamp(snapshot.get("timestamp"), BACKUP_STATUS_MAX_AGE):
+        return _status("backup", "unhealthy", "Backup status is stale or has an invalid timestamp")
+    if snapshot.get("status") != "ok":
+        return _status("backup", "unhealthy", "Last backup did not complete successfully")
+    duration = snapshot.get("duration_s")
+    if not _valid_number(duration):
+        return _status("backup", "unhealthy", "Backup status is invalid")
+    return _status("backup", "healthy", "Recent backup completed successfully")
 
 
 @router.get("/services", response_model=ServicesHealthResponse)
@@ -329,57 +367,40 @@ async def get_services_health(
     current_user: User = Depends(require_server_admin),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """
-    Get health status of all system services (server admin only)
-
-    Checks connectivity to infrastructure services (PostgreSQL, Redis, MinIO)
-    and attempts to verify worker services are accessible.
-
-    Args:
-        current_user: Current authenticated server admin
-        db: Database session
-
-    Returns:
-        Status of all services
-    """
+    """Return health of infrastructure and explicitly enabled workers."""
     logger.info("Health check requested", user_id=current_user.id)
+    enabled, config_error = _enabled_workers()
+    workers = enabled or set()
+    backup_enabled = os.environ.get("BACKUP_ENABLED", "false").lower() == "true"
+    cold_enabled = os.environ.get("COLD_TIER_ENABLED", "false").lower() == "true"
 
-    # Check all services
-    services = []
+    postgres_task = check_postgres(db)
+    frontend_task = check_frontend()
+    probe_task = _run_health_probe(workers, backup_enabled, cold_enabled)
+    postgres, frontend, probe = await asyncio.gather(postgres_task, frontend_task, probe_task)
 
-    # Infrastructure services
-    services.append(await check_postgres(db))
-    services.append(check_redis())
-    services.append(await check_http_service("minio", "http://minio:9000/minio/health/live"))
-
-    # API (self)
-    services.append(ServiceStatus(
-        name="api",
-        status="healthy",
-        message="Service is running"
-    ))
-
-    # Frontend
-    services.append(await check_http_service("frontend", "http://frontend:80"))
-
-    # Every worker row is a real heartbeat, stamped by the worker itself at
-    # the top of its own loop. Ingestion passes no queue: it watches the
-    # filesystem, so there is no backlog of its own to report.
-    services.append(check_heartbeat("ingestion", HEARTBEAT_KEY_INGESTION))
-    services.append(check_heartbeat("detection", HEARTBEAT_KEY_DETECTION, QUEUE_IMAGE_INGESTED, DEVICE_KEY_DETECTION))
-    services.append(check_heartbeat("classification", HEARTBEAT_KEY_CLASSIFICATION, QUEUE_DETECTION_COMPLETE, DEVICE_KEY_CLASSIFICATION))
-    services.append(check_heartbeat("notifications", HEARTBEAT_KEY_NOTIFICATIONS, QUEUE_NOTIFICATION_EVENTS))
-    services.append(check_heartbeat("notifications-email", HEARTBEAT_KEY_NOTIFICATIONS_EMAIL, QUEUE_NOTIFICATION_EMAIL))
-    services.append(check_heartbeat("notifications-telegram", HEARTBEAT_KEY_NOTIFICATIONS_TELEGRAM, QUEUE_NOTIFICATION_TELEGRAM))
-    services.append(check_heartbeat("notifications-earthranger", HEARTBEAT_KEY_NOTIFICATIONS_EARTHRANGER, QUEUE_NOTIFICATION_EARTHRANGER))
-    services.append(check_heartbeat("notifications-sensingclues", HEARTBEAT_KEY_NOTIFICATIONS_SENSINGCLUES, QUEUE_NOTIFICATION_SENSINGCLUES))
-    services.append(check_cold_tier_watchdog())
-    services.append(check_backup())
-
+    services = [
+        postgres,
+        _status(
+            "redis",
+            "healthy" if _probe_ok(probe, "redis_ok") else "unhealthy",
+            "Redis connection successful" if _probe_ok(probe, "redis_ok") else "Redis probe failed or timed out",
+        ),
+        _status(
+            "minio",
+            "healthy" if _probe_ok(probe, "storage_ok") else "unhealthy",
+            "Authenticated raw-images bucket check succeeded" if _probe_ok(probe, "storage_ok") else "Configured object storage check failed or timed out",
+        ),
+        frontend,
+        *(_worker_statuses(enabled, config_error, probe)),
+        check_cold_tier_watchdog(probe),
+        check_backup(probe),
+        _status("api", "healthy", "Service is running"),
+    ]
     logger.info(
         "Health check completed",
-        healthy_count=sum(1 for s in services if s.status == "healthy"),
-        total_count=len(services)
+        healthy_count=sum(1 for service in services if service.status == "healthy"),
+        unhealthy_count=sum(1 for service in services if service.status == "unhealthy"),
+        disabled_count=sum(1 for service in services if service.status == "disabled"),
     )
-
     return ServicesHealthResponse(services=services)
