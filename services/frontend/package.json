@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "test:bulk-upload": "node --experimental-strip-types scripts/bulk-upload-contract.test.mjs",
     "preview": "vite preview",
     "sweep": "node scripts/ui-sweep.mjs"
   },

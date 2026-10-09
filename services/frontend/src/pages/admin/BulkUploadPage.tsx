@@ -44,6 +44,12 @@ import { ClockOffsetDialog } from '../../components/ClockOffsetDialog';
 import { formatOffset, shiftEntries } from '../../utils/clock-offset';
 import {
   bulkUploadApi,
+  bulkUploadCompletionMessage,
+  bulkUploadOutcomeCounts,
+  bulkUploadOutcomeText,
+  bulkUploadStatusLabel,
+  bulkUploadStatusTone,
+  isBulkUploadSuccessful,
   type BulkUploadJob,
   type BulkUploadManifest,
   type ScanProfileEntry,
@@ -54,7 +60,7 @@ import {
   type ActiveUpload,
 } from '../../lib/bulkUploadStore';
 
-const TERMINAL_STATUSES = new Set<BulkUploadJob['status']>(['done', 'failed', 'cancelled']);
+const TERMINAL_STATUSES = new Set<BulkUploadJob['status']>(['done', 'partial', 'failed', 'cancelled']);
 
 // Save a fetched blob to disk via a temporary anchor.
 function downloadBlob(blob: Blob, filename: string) {
@@ -68,38 +74,13 @@ function downloadBlob(blob: Blob, filename: string) {
   window.URL.revokeObjectURL(url);
 }
 
-function statusLabel(status: BulkUploadJob['status']): string {
-  // Collapse every in-flight server status to "Active" so the
-  // badge matches the filter chips above. The per-row caption and
-  // progress bar already tell the user which phase of "Active" the
-  // row is in, so distinguishing them on the badge is redundant.
-  switch (status) {
-    case 'done':
-      return 'Done';
-    case 'failed':
-      return 'Failed';
-    case 'cancelled':
-      return 'Cancelled';
-    default:
-      return 'Active';
-  }
-}
-
-// Status badges use the project palette (FRONTEND_CONVENTIONS.md):
-// good=#0f6064, middle=#71b7ba, bad=#882000. Done is the only
-// success terminal state, failed is the only failure state, everything
-// else is in-flight/pending and shares the middle colour.
-function statusBadgeStyle(status: BulkUploadJob['status']): React.CSSProperties {
-  switch (status) {
-    case 'done':
-      return { backgroundColor: '#0f6064', color: 'white' };
-    case 'failed':
-      return { backgroundColor: '#882000', color: 'white' };
-    case 'cancelled':
-      // Stopped on purpose, not an error: muted grey rather than the bad colour.
-      return { backgroundColor: '#6b7280', color: 'white' };
-    default:
-      return { backgroundColor: '#71b7ba', color: 'white' };
+function statusBadgeStyle(job: BulkUploadJob): React.CSSProperties {
+  switch (bulkUploadStatusTone(job)) {
+    case 'success': return { backgroundColor: '#0f6064', color: 'white' };
+    case 'warning': return { backgroundColor: '#a16207', color: 'white' };
+    case 'failure': return { backgroundColor: '#882000', color: 'white' };
+    case 'muted': return { backgroundColor: '#6b7280', color: 'white' };
+    default: return { backgroundColor: '#71b7ba', color: 'white' };
   }
 }
 
@@ -137,7 +118,8 @@ const MIN_SAMPLE = 20;
 const ETA_STATES = new Set<BulkUploadJob['status']>(['processing']);
 
 function remainingFiles(job: BulkUploadJob): number {
-  return Math.max(0, job.total_files - job.processed_files - job.skipped_files);
+  if (job.pending_files !== undefined) return Math.max(0, job.pending_files);
+  return Math.max(0, job.total_files - job.processed_files - job.skipped_files - (job.duplicate_files ?? 0) - (job.failed_files ?? 0));
 }
 
 // Per-job seconds/image, computed from THIS job's own progress when
@@ -149,7 +131,7 @@ function jobRate(job: BulkUploadJob): number {
   if (job.status !== 'processing' || !job.process_started_at) {
     return DEFAULT_PROCESS_SECONDS_PER_IMAGE;
   }
-  const completed = job.processed_files + job.skipped_files;
+  const completed = job.processed_files + job.skipped_files + (job.duplicate_files ?? 0);
   if (completed < MIN_SAMPLE) return DEFAULT_PROCESS_SECONDS_PER_IMAGE;
   const elapsedSec =
     (Date.now() - new Date(job.process_started_at).getTime()) / 1000;
@@ -215,7 +197,7 @@ const FILTER_DEFS: { key: FilterKey; label: string; matches: (s: BulkUploadJob['
       || s === 'processing',
   },
   { key: 'done', label: 'Done', matches: (s) => s === 'done' },
-  { key: 'failed', label: 'Failed', matches: (s) => s === 'failed' },
+  { key: 'failed', label: 'Failed / partial', matches: (s) => s === 'failed' || s === 'partial' },
 ];
 
 export const BulkUploadPage: React.FC = () => {
@@ -327,13 +309,13 @@ export const BulkUploadPage: React.FC = () => {
     for (const job of jobs) {
       const prev = prevStatusesRef.current.get(job.uuid);
       const becameTerminal =
-        prev === 'processing'
-        && (job.status === 'done' || job.status === 'failed');
+        prev !== undefined
+        && !TERMINAL_STATUSES.has(prev)
+        && TERMINAL_STATUSES.has(job.status)
+        && job.status !== 'cancelled';
       if (becameTerminal) {
-        const happy = job.status === 'done';
-        const body = happy
-          ? `${job.original_filename} processed.`
-          : `${job.original_filename} failed.`;
+        const happy = isBulkUploadSuccessful(job);
+        const body = `${job.original_filename}: ${bulkUploadCompletionMessage(job)}.`;
         if (happy) toast.success(body);
         else toast.error(body);
         // Fire a desktop notification only when the user has already
@@ -689,7 +671,7 @@ const BulkUploadModal: React.FC<{
                     files: scanned.files,
                     entries: corrected,
                     onError: (msg) => toast.error(msg),
-                    onSuccess: () => toast.success('Processing started'),
+                    onSuccess: () => toast.success('Uploads accepted; analysis queued. Classification has not finished.'),
                     onCacheInvalidate: invalidateJobs,
                   });
                   closeModal();
@@ -720,7 +702,7 @@ const BulkUploadModal: React.FC<{
                   files: scanned.files,
                   entries: ctx.entries,
                   onError: (msg) => toast.error(msg),
-                  onSuccess: () => toast.success('Processing started'),
+                  onSuccess: () => toast.success('Uploads accepted; analysis queued. Classification has not finished.'),
                   onCacheInvalidate: invalidateJobs,
                 });
                 closeModal();
@@ -1378,37 +1360,13 @@ const ReviewStep: React.FC<{
 
 // ----- JobRow -----
 
-function jobSummaryText(job: BulkUploadJob): string {
-  const summary = job.manifest?.process_summary;
-  if (!summary) {
-    return `${job.processed_files} of ${job.total_files} processed`
-      + (job.skipped_files > 0 ? `, ${job.skipped_files} skipped` : '');
-  }
-  const queued = summary.queued_for_pipeline;
-  const dups = summary.duplicates;
-  const others = summary.other_skipped;
-  if (queued === 0 && dups > 0 && others === 0) {
-    return `All ${dups} images were already in the project, nothing new added`;
-  }
-  if (queued === 0 && dups + others > 0) {
-    return `No new images added, ${dups} duplicate${dups === 1 ? '' : 's'}`
-      + (others > 0 ? `, ${others} other skipped` : '');
-  }
-  const processed = job.processed_files;
-  const skipParts: string[] = [];
-  if (dups > 0) skipParts.push(`${dups} duplicate${dups === 1 ? '' : 's'}`);
-  if (others > 0) skipParts.push(`${others} other skipped`);
-  return `${processed} of ${queued} classified`
-    + (skipParts.length ? `, ${skipParts.join(', ')}` : '');
-}
-
 function buildCurationHref(projectId: number, job: BulkUploadJob): string | null {
-  // Done jobs that actually imported images. Curation shows classified images,
-  // which is the whole import for a done job. Skip when nothing was imported
+  // Completed jobs that actually imported images. Curation shows classified
+  // records even when another file in the batch failed. Skip when nothing was imported
   // (all duplicates, or images later deleted) so the link never lands on an
   // empty curation view. A cancelled job has non-classified leftovers curation
   // cannot show, so it uses the row's "Delete images" (all statuses) instead.
-  if (job.status !== 'done' || job.processed_files <= 0) return null;
+  if ((job.status !== 'done' && job.status !== 'partial') || job.outcome_warning || job.processed_files <= 0) return null;
   const params = new URLSearchParams();
   params.set('bulk_upload_job', job.uuid);
   return `/projects/${projectId}/manage-images?${params.toString()}`;
@@ -1434,6 +1392,24 @@ const JobRow: React.FC<{
   isDeletingImages,
 }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
+  const retryFailedMutation = useMutation({
+    mutationFn: () => bulkUploadApi.retryFailed(projectId, job.uuid),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['bulk-upload-jobs', projectId] });
+      if (result.retried_files > 0) {
+        const suffix = result.unretryable_files > 0
+          ? ` ${result.unretryable_files} failed file${result.unretryable_files === 1 ? ' was' : 's were'} not retryable.`
+          : '';
+        toast.success(`Queued ${result.retried_files} failed file${result.retried_files === 1 ? '' : 's'} for retry; they are not classified yet.${suffix}`);
+      } else {
+        toast.error(`No failed files could be retried${result.unretryable_files > 0 ? ` (${result.unretryable_files} not retryable)` : ''}.`);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(`Retry failed. ${error.response?.data?.detail || error.message}`);
+    },
+  });
   // Subscribe to the active client-side upload session. If this row
   // is the one currently uploading from THIS browser, the store has
   // live counts; otherwise we fall back to the server-recorded state.
@@ -1444,6 +1420,7 @@ const JobRow: React.FC<{
 
   const isTerminal = TERMINAL_STATUSES.has(job.status);
   const curationHref = buildCurationHref(projectId, job);
+  const outcomeCounts = bulkUploadOutcomeCounts(job);
 
   const counts = deriveRowCounts(job, isActiveUpload ? active : null);
 
@@ -1452,7 +1429,7 @@ const JobRow: React.FC<{
   // mostly queue time, not analysis. The "Started X ago" line still gives the
   // timeline, and a waiting job shows its queue position instead.
   const uploadCaption = renderUploadCaption({
-    job, counts, isActiveUpload, uploadEta, failed: active?.failed ?? 0,
+    job, counts, isActiveUpload, uploadEta, failed: active?.uploadFailed ?? 0,
   });
   const processCaption = renderProcessCaption({
     job, counts, etaText,
@@ -1466,11 +1443,11 @@ const JobRow: React.FC<{
             <span className="text-sm font-medium truncate">{job.original_filename}</span>
             <span
               className="px-2 py-0.5 rounded-full text-xs font-medium inline-flex items-center gap-1"
-              style={statusBadgeStyle(job.status)}
+              style={statusBadgeStyle(job)}
             >
-              {job.status === 'done' && <Check className="h-3 w-3" />}
-              {job.status === 'failed' && <AlertTriangle className="h-3 w-3" />}
-              {statusLabel(job.status)}
+              {job.status === 'done' && !job.outcome_warning && <Check className="h-3 w-3" />}
+              {(job.status === 'failed' || job.status === 'partial' || job.outcome_warning) && <AlertTriangle className="h-3 w-3" />}
+              {bulkUploadStatusLabel(job)}
             </span>
           </div>
           <p className="text-xs text-muted-foreground mt-1.5">
@@ -1509,6 +1486,19 @@ const JobRow: React.FC<{
                 <CircleStop className="h-4 w-4 mr-1" />
               )}
               Stop
+            </Button>
+          )}
+          {isTerminal && outcomeCounts.failed > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => retryFailedMutation.mutate()}
+              disabled={retryFailedMutation.isPending}
+            >
+              {retryFailedMutation.isPending
+                ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                : <RotateCw className="h-4 w-4 mr-1" />}
+              Retry failures
             </Button>
           )}
           {isTerminal && (
@@ -1570,11 +1560,16 @@ const JobRow: React.FC<{
         />
       </div>
 
-      {isTerminal && (
-        <p className="text-xs text-muted-foreground mt-2">
-          {jobSummaryText(job)}
+      {job.outcome_warning && (
+        <p role="status" className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 mt-2">
+          Outcome unknown: {job.outcome_warning}
         </p>
       )}
+      <p className="text-xs text-muted-foreground mt-2" aria-label="File outcomes">
+        {bulkUploadOutcomeText(job, isActiveUpload && active
+          ? { uploaded: active.uploaded + active.skipped, uploadFailed: active.uploadFailed }
+          : undefined)}
+      </p>
       {job.error_message && (
         <div className="text-xs text-red-600 mt-2">{job.error_message}</div>
       )}
@@ -1591,22 +1586,21 @@ interface RowCounts {
 }
 
 function deriveRowCounts(job: BulkUploadJob, active: ActiveUpload | null): RowCounts {
+  const outcomes = bulkUploadOutcomeCounts(job);
   const total = Math.max(job.total_files, 1);
   let uploadDone: number;
   if (active !== null) {
-    uploadDone = active.uploaded + active.skipped;
+    uploadDone = active.uploaded + active.skipped + active.uploadFailed;
   } else if (job.status === 'uploading') {
-    // No live session for this job in this tab. Server doesn't track
-    // partial upload progress yet, so it's effectively unknown.
-    uploadDone = 0;
+    uploadDone = outcomes.uploaded + outcomes.uploadFailed;
   } else {
-    // Past the upload phase by definition.
-    uploadDone = job.total_files;
+    uploadDone = job.outcome_warning ? 0 : outcomes.uploaded + outcomes.uploadFailed;
   }
   const uploadPercent = honestPercent(uploadDone, total);
-  const processDone = job.processed_files + job.skipped_files;
+  const processDone = outcomes.classified + outcomes.failed + outcomes.uploadFailed
+    + outcomes.duplicates + outcomes.skipped;
   const processPercent =
-    job.status === 'done' || job.status === 'processing'
+    !job.outcome_warning && (job.status === 'done' || job.status === 'processing' || job.status === 'partial')
       ? honestPercent(processDone, total)
       : 0;
   return {
@@ -1667,10 +1661,12 @@ function renderProcessCaption({
     }
     let s = `${counts.processDone.toLocaleString()} / ${counts.total.toLocaleString()} · ${counts.processPercent} %`;
     if (etaText) s += ` · ${etaText} left`;
+    s += ` · ${bulkUploadOutcomeCounts(job).pending.toLocaleString()} pending`;
     return s;
   }
   if (job.status === 'done') {
-    return `${counts.processDone.toLocaleString()} / ${counts.total.toLocaleString()} · 100 %`;
+    const outcomes = bulkUploadOutcomeCounts(job);
+    return `${outcomes.classified.toLocaleString()} classified · ${outcomes.pending.toLocaleString()} pending`;
   }
   if (counts.uploadPercent === 100) return 'Pending';
   return 'Waiting on upload';

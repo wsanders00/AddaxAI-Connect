@@ -15,13 +15,14 @@ resumed; they expire via the orphan-cleanup pass.
 """
 import asyncio
 import csv
+import hashlib
 import io
 import os
 import re
 import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -37,10 +38,18 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.camera_profiles import identify_camera_profile
+from shared.bulk_outcomes import ledger_from_manifest, merge_ledger_entry, summarize_ledger, terminal_status
 from shared.database import get_async_session
 from shared.logger import get_logger
-from shared.models import BulkUploadJob, Camera, Image, Site, User
-from shared.queue import QUEUE_BULK_UPLOAD_JOB_PROCESS, RedisQueue
+from shared.models import BulkUploadJob, Camera, Detection, Image, Site, User
+from shared.queue import (
+    QUEUE_BULK_UPLOAD_JOB_PROCESS,
+    QUEUE_DETECTION_COMPLETE,
+    QUEUE_DETECTION_COMPLETE_BULK,
+    QUEUE_IMAGE_INGESTED,
+    QUEUE_IMAGE_INGESTED_BULK,
+    RedisQueue,
+)
 from shared.storage import BUCKET_BULK_UPLOAD_STAGING, StorageClient
 from auth.permissions import require_project_admin_access
 from routers.image_admin import delete_images_by_ids
@@ -106,8 +115,15 @@ class BulkUploadJobResponse(BaseModel):
     original_filename: str
     status: str
     total_files: int
+    uploaded_files: int = 0
     processed_files: int
+    classified_files: int = 0
+    failed_files: int = 0
+    upload_failed_files: int = 0
+    duplicate_files: int = 0
     skipped_files: int
+    pending_files: int = 0
+    outcome_warning: Optional[str] = None
     error_message: Optional[str]
     manifest: Optional[Dict[str, Any]] = None
     time_offset_seconds: int = 0
@@ -210,6 +226,22 @@ def _staging_prefix(project_id: int, job_uuid: str) -> str:
     return f"{project_id}/{job_uuid}/"
 
 
+def _parse_staged_index(object_key: str) -> Optional[int]:
+    tail = object_key.rsplit("/", 1)[-1]
+    prefix = tail.split("_", 1)[0] if "_" in tail else ""
+    return int(prefix) if prefix.isdigit() else None
+
+
+def _list_staged_uploads(prefix: str) -> List[str]:
+    storage = StorageClient()
+    paginator = storage.client.get_paginator("list_objects_v2")
+    return [
+        obj["Key"]
+        for page in paginator.paginate(Bucket=BUCKET_BULK_UPLOAD_STAGING, Prefix=prefix)
+        for obj in (page.get("Contents", []) or [])
+    ]
+
+
 def _gb(num_bytes: int) -> str:
     """Format a byte count as a one-decimal GB string for user messages."""
     return f"{max(num_bytes, 0) / (1024 ** 3):.1f}"
@@ -253,7 +285,7 @@ def _safe_basename(name: str) -> str:
 async def _pipeline_done_counts(
     db: AsyncSession, job_ids: List[int]
 ) -> Dict[int, int]:
-    """Count classified+failed images per bulk-upload job."""
+    """Count successfully classified images per bulk-upload job."""
     if not job_ids:
         return {}
     rows = (
@@ -261,7 +293,7 @@ async def _pipeline_done_counts(
             select(Image.bulk_upload_job_id, func.count(Image.id))
             .where(
                 Image.bulk_upload_job_id.in_(job_ids),
-                Image.status.in_(("classified", "failed")),
+                Image.status == "classified",
             )
             .group_by(Image.bulk_upload_job_id)
         )
@@ -269,29 +301,80 @@ async def _pipeline_done_counts(
     return {row[0]: row[1] for row in rows}
 
 
+async def _pipeline_failed_counts(db: AsyncSession, job_ids: List[int]) -> Dict[int, int]:
+    if not job_ids:
+        return {}
+    rows = (await db.execute(
+        select(Image.bulk_upload_job_id, func.count(Image.id))
+        .where(Image.bulk_upload_job_id.in_(job_ids), Image.status == "failed")
+        .group_by(Image.bulk_upload_job_id)
+    )).all()
+    return {row[0]: row[1] for row in rows}
+
+
 async def _finalise_done_jobs(
-    db: AsyncSession, jobs: List[BulkUploadJob], processed_counts: Dict[int, int]
+    db: AsyncSession, jobs: List[BulkUploadJob], processed_counts: Dict[int, int],
+    failed_counts: Optional[Dict[int, int]] = None,
 ) -> None:
-    """Flip 'processing' jobs to 'done' once every queued image is finished."""
-    finished_ids: List[int] = []
-    for job in jobs:
-        if job.status != "processing":
-            continue
-        processed = processed_counts.get(job.id, 0)
-        if processed + job.skipped_files >= job.total_files:
-            finished_ids.append(job.id)
-    if not finished_ids:
+    """Apply a truthful terminal state once each expected file has resolved."""
+    finished: Dict[int, str] = {}
+    if not jobs:
+        return
+    current_jobs = (await db.execute(
+        select(BulkUploadJob)
+        .where(BulkUploadJob.id.in_([job.id for job in jobs]))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    active = [job for job in current_jobs if job.status == "processing"]
+    if not active:
+        return
+    job_ids = [job.id for job in active]
+    # Re-read pipeline states after locking each job. This serializes terminal
+    # finalization with retry-failed, which also locks the job before reset.
+    processed_counts = await _pipeline_done_counts(db, job_ids)
+    failed_counts = await _pipeline_failed_counts(db, job_ids)
+    for job in active:
+        manifest = job.manifest or {}
+        ledger = ledger_from_manifest(manifest)
+        classified = processed_counts.get(job.id, 0)
+        pipeline_failed = failed_counts.get(job.id, 0)
+        # Count pipeline terminal rows by durable Image FK. The upload ledger
+        # records the accepted index and its image UUID at worker handoff.
+        pipeline_terminal = classified + pipeline_failed
+        queued_indexes = sum(1 for entry in ledger.values() if entry.get("image_uuid"))
+        duplicates = sum(1 for entry in ledger.values() if entry.get("outcome") == "duplicate")
+        skipped = sum(1 for entry in ledger.values() if entry.get("outcome") == "skipped")
+        upload_failed = sum(1 for entry in ledger.values() if entry.get("outcome") == "failed_upload")
+        worker_failed = sum(
+            1 for entry in ledger.values()
+            if entry.get("outcome") == "failed" and not entry.get("image_uuid")
+        )
+        missing = max(
+            0, job.total_files - queued_indexes - duplicates - skipped - upload_failed - worker_failed
+        )
+        pending = missing + max(0, queued_indexes - pipeline_terminal)
+        summary = {
+            "pending_files": pending,
+            "classified_files": classified,
+            "failed_files": pipeline_failed + upload_failed + worker_failed,
+            "duplicate_files": duplicates,
+            "skipped_files": skipped,
+        }
+        terminal = terminal_status(summary)
+        if terminal:
+            finished[job.id] = terminal
+    if not finished:
         return
     now = datetime.now(timezone.utc)
-    await db.execute(
-        update(BulkUploadJob)
-        .where(BulkUploadJob.id.in_(finished_ids))
-        .values(status="done", finished_at=now)
-    )
+    for job_id, terminal in finished.items():
+        await db.execute(update(BulkUploadJob).where(BulkUploadJob.id == job_id).values(
+            status=terminal, finished_at=now,
+        ))
     await db.commit()
     for job in jobs:
-        if job.id in finished_ids:
-            job.status = "done"
+        if job.id in finished:
+            job.status = finished[job.id]
             job.finished_at = now
 
 
@@ -378,6 +461,7 @@ def _job_to_response(
     processed_files: int,
     queue_position: Optional[int] = None,
     *,
+    pipeline_failed_files: int = 0,
     include_file_log: bool = True,
 ) -> BulkUploadJobResponse:
     # file_log can run to MB at 20k files; the list endpoint polls
@@ -385,9 +469,34 @@ def _job_to_response(
     # detail. Strip it there. The CSV download endpoint reads
     # manifest.file_log straight off the row, so it doesn't depend on
     # this response shape.
-    manifest = job.manifest
-    if manifest is not None and not include_file_log and "file_log" in manifest:
-        manifest = {k: v for k, v in manifest.items() if k != "file_log"}
+    manifest = dict(job.manifest) if job.manifest is not None else None
+    if manifest is not None:
+        manifest.pop("upload_ledger", None)
+        if not include_file_log:
+            manifest.pop("file_log", None)
+    summary = summarize_ledger(job.manifest, job.total_files)
+    ledger = ledger_from_manifest(job.manifest)
+    worker_duplicates = sum(1 for entry in ledger.values() if entry.get("outcome") == "duplicate")
+    worker_skipped = sum(1 for entry in ledger.values() if entry.get("outcome") == "skipped")
+    upload_failed = sum(1 for entry in ledger.values() if entry.get("outcome") == "failed_upload")
+    worker_failed = sum(
+        1 for entry in ledger.values()
+        if entry.get("outcome") == "failed" and not entry.get("image_uuid")
+    )
+    queued_indexes = sum(1 for entry in ledger.values() if entry.get("image_uuid"))
+    pipeline_terminal = processed_files + pipeline_failed_files
+    summary["classified_files"] = processed_files
+    summary["duplicate_files"] = worker_duplicates
+    summary["skipped_files"] = worker_skipped
+    summary["failed_files"] = upload_failed + pipeline_failed_files + worker_failed
+    summary["pending_files"] = max(
+        0,
+        job.total_files - worker_duplicates - worker_skipped - upload_failed - worker_failed
+        - min(queued_indexes, pipeline_terminal),
+    )
+    outcome_warning = None
+    if job.status == "done" and job.total_files == 0 and not ledger and not (manifest or {}).get("file_log"):
+        outcome_warning = "Legacy job has no reliable per-file outcome records; historical counts are unknown."
     return BulkUploadJobResponse(
         uuid=job.uuid,
         project_id=job.project_id,
@@ -396,8 +505,15 @@ def _job_to_response(
         original_filename=job.original_filename,
         status=job.status,
         total_files=job.total_files,
+        uploaded_files=summary.get("uploaded_files", 0),
         processed_files=processed_files,
-        skipped_files=job.skipped_files,
+        classified_files=processed_files,
+        failed_files=summary["failed_files"],
+        upload_failed_files=upload_failed,
+        duplicate_files=summary["duplicate_files"],
+        skipped_files=summary["skipped_files"],
+        pending_files=summary["pending_files"],
+        outcome_warning=outcome_warning,
         error_message=job.error_message,
         manifest=manifest,
         time_offset_seconds=job.time_offset_seconds,
@@ -642,6 +758,10 @@ async def create_bulk_upload_job(
     # Resolve the target camera. Mode A uses the profile-matched device_id (auto
     # -created if new); Mode B uses a synthetic per-site camera and pins the site.
     manifest = dict(body.manifest or {})
+    # These keys are server-owned; the browser scan cannot assert acceptance
+    # or claim processing outcomes.
+    for reserved in ("upload_ledger", "file_log", "process_summary"):
+        manifest.pop(reserved, None)
     if body.device_id:
         camera = await _get_or_create_camera_by_device_id(
             db, project_id, body.device_id
@@ -740,7 +860,7 @@ async def _upload_bulk_file_inner(
             select(BulkUploadJob).where(
                 BulkUploadJob.project_id == project_id,
                 BulkUploadJob.uuid == job_uuid,
-            )
+            ).with_for_update()
         )
     ).scalar_one_or_none()
     if job is None:
@@ -750,6 +870,8 @@ async def _upload_bulk_file_inner(
             status_code=400,
             detail=f"Job is in status '{job.status}', cannot accept more files",
         )
+    if index >= job.total_files:
+        raise HTTPException(status_code=400, detail="File index exceeds expected file count")
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
@@ -779,11 +901,95 @@ async def _upload_bulk_file_inner(
 
     safe_name = _safe_basename(file.filename)
     object_key = f"{_staging_prefix(project_id, job_uuid)}{index:06d}_{safe_name}"
+    checksum = hashlib.sha256(body).hexdigest()
+    prior = ledger_from_manifest(job.manifest).get(str(index), {})
+    if prior.get("accepted"):
+        # The job row lock serializes retries across API processes. An index
+        # represents one immutable input, even if a resumed folder differs.
+        if prior.get("filename") != safe_name or prior.get("sha256") != checksum:
+            raise HTTPException(status_code=409, detail="This file index already contains a different image; resume with the original folder")
+        return {"object_key": object_key, "size": len(body)}
 
     storage = StorageClient()
-    storage.upload_fileobj(io.BytesIO(body), BUCKET_BULK_UPLOAD_STAGING, object_key)
+    existing_keys = storage.list_objects(
+        BUCKET_BULK_UPLOAD_STAGING,
+        prefix=f"{_staging_prefix(project_id, job_uuid)}{index:06d}_",
+    )
+    if existing_keys:
+        # Recover the storage-write/database-commit crash boundary. A staged
+        # object also reserves its index; a changed resume cannot add a second.
+        if existing_keys != [object_key]:
+            raise HTTPException(status_code=409, detail="This file index has a staged image with a different name; resume with the original folder")
+        staged = storage.download_fileobj(BUCKET_BULK_UPLOAD_STAGING, object_key)
+        if hashlib.sha256(staged).hexdigest() != checksum:
+            raise HTTPException(status_code=409, detail="This file index has different staged content; resume with the original folder")
+    else:
+        storage.upload_fileobj(io.BytesIO(body), BUCKET_BULK_UPLOAD_STAGING, object_key)
+
+    manifest, _ = merge_ledger_entry(
+        job.manifest,
+        index,
+        {"filename": safe_name, "outcome": "uploaded", "accepted": True, "size": len(body), "sha256": checksum},
+        protect_accepted=False,
+    )
+    job.manifest = manifest
+    await db.commit()
 
     return {"object_key": object_key, "size": len(body)}
+
+
+class ReportedUploadFailure(BaseModel):
+    index: int = Field(ge=0, lt=MAX_FILES_PER_JOB)
+    filename: str = Field(min_length=1, max_length=255)
+    reason: Literal["request_too_large", "upload_failed", "cancelled"]
+
+
+class ReportUploadOutcomesRequest(BaseModel):
+    files: List[ReportedUploadFailure] = Field(min_length=1, max_length=MAX_FILES_PER_JOB)
+
+
+@router.post("/jobs/{job_uuid}/outcomes", response_model=BulkUploadJobResponse)
+async def report_upload_outcomes(
+    project_id: int,
+    job_uuid: str,
+    body: ReportUploadOutcomesRequest,
+    user: User = Depends(require_project_admin_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Persist browser-observed upload failures such as a proxy 413."""
+    job = (await db.execute(select(BulkUploadJob).where(
+        BulkUploadJob.project_id == project_id,
+        BulkUploadJob.uuid == job_uuid,
+    ).with_for_update())).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Bulk upload job not found")
+    if job.status != "uploading":
+        raise HTTPException(status_code=400, detail=f"Job is in status '{job.status}'")
+
+    seen = set()
+    manifest = dict(job.manifest or {})
+    for item in body.files:
+        index = item.index
+        filename = item.filename
+        reason = item.reason
+        if index < 0 or index >= job.total_files:
+            raise HTTPException(status_code=422, detail="File index exceeds expected file count")
+        if index in seen:
+            raise HTTPException(status_code=422, detail="Duplicate index in outcomes request")
+        seen.add(index)
+        manifest, _ = merge_ledger_entry(
+            manifest,
+            index,
+            {"filename": _safe_basename(filename), "outcome": "failed_upload", "reason": reason},
+        )
+        # Existing server acceptance is authoritative and cannot be overwritten.
+    job.manifest = manifest
+    await db.commit()
+    await db.refresh(job)
+    camera_name = await db.scalar(select(Camera.device_id).where(Camera.id == job.camera_id)) if job.camera_id else None
+    return _job_to_response(
+        job, camera_name, user.email, processed_files=0,
+    )
 
 
 @router.post("/jobs/{job_uuid}/finalize", response_model=BulkUploadJobResponse)
@@ -802,7 +1008,7 @@ async def finalize_bulk_upload(
             select(BulkUploadJob).where(
                 BulkUploadJob.project_id == project_id,
                 BulkUploadJob.uuid == job_uuid,
-            )
+            ).with_for_update()
         )
     ).scalar_one_or_none()
     if job is None:
@@ -817,6 +1023,63 @@ async def finalize_bulk_upload(
             status_code=400,
             detail="Job has no target camera",
         )
+
+    # Backfill acceptance for already-staged objects (including an upload
+    # started before a process restart). Refuse ambiguous storage state: the
+    # worker would otherwise process two objects under one expected index.
+    manifest = dict(job.manifest or {})
+    staged_by_index: Dict[int, List[str]] = {}
+    for key in _list_staged_uploads(job.staged_object_key):
+        index = _parse_staged_index(key)
+        if index is None or index >= job.total_files:
+            continue
+        staged_by_index.setdefault(index, []).append(key)
+
+    duplicate_indexes = sorted(index for index, keys in staged_by_index.items() if len(keys) > 1)
+    if duplicate_indexes:
+        shown = ", ".join(str(index) for index in duplicate_indexes[:20])
+        suffix = " …" if len(duplicate_indexes) > 20 else ""
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Multiple staged objects share file index(es) {shown}{suffix}. "
+                "No staged files were removed and the job was not finalized. "
+                "Preserve these objects and have an administrator resolve the upload before retrying."
+            ),
+        )
+
+    for index, keys in staged_by_index.items():
+        key = keys[0]
+        tail = key.rsplit("/", 1)[-1]
+        filename = tail.split("_", 1)[1] if "_" in tail else tail
+        manifest, _ = merge_ledger_entry(
+            manifest, index,
+            {"filename": _safe_basename(filename), "outcome": "uploaded", "accepted": True},
+        )
+    job.manifest = manifest
+    ledger_summary = summarize_ledger(job.manifest, job.total_files)
+    unresolved = [
+        index for index in range(job.total_files)
+        if str(index) not in ledger_from_manifest(job.manifest)
+    ]
+    if unresolved:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Upload is incomplete; report every failed file before finalizing.",
+                "pending_files": ledger_summary.get("pending_files", len(unresolved)),
+                "missing_index_count": len(unresolved),
+                "missing_indexes": unresolved[:100],
+            },
+        )
+    accepted = ledger_summary.get("uploaded_files", 0)
+    if accepted == 0:
+        job.status = "failed"
+        job.error_message = "No files were accepted; retry the failed uploads."
+        job.finished_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(job)
+        return _job_to_response(job, None, user.email, processed_files=0)
 
     job.status = "processing"
     job.started_at = datetime.now(timezone.utc)
@@ -1005,7 +1268,8 @@ async def list_bulk_upload_jobs(
     ).all()
     jobs = [job for job, _, _ in rows]
     processed_counts = await _pipeline_done_counts(db, [j.id for j in jobs])
-    await _finalise_done_jobs(db, jobs, processed_counts)
+    failed_counts = await _pipeline_failed_counts(db, [j.id for j in jobs])
+    await _finalise_done_jobs(db, jobs, processed_counts, failed_counts)
     positions = await _queue_positions(db, project_id)
     return [
         _job_to_response(
@@ -1013,6 +1277,7 @@ async def list_bulk_upload_jobs(
             camera_name=cam_name,
             created_by_email=email,
             processed_files=processed_counts.get(job.id, 0),
+            pipeline_failed_files=failed_counts.get(job.id, 0),
             queue_position=positions.get(job.id),
             # The list endpoint polls every 5 s and only needs the
             # summary. Per-file detail can run to MB at 20k-image
@@ -1094,7 +1359,8 @@ async def get_bulk_upload_log(
 
     rows: List[Dict[str, Any]] = []
     manifest = job.manifest or {}
-    for entry in manifest.get("file_log") or []:
+    file_log = manifest.get("file_log") or []
+    for entry in file_log:
         rows.append({
             "filename": entry.get("filename", ""),
             "outcome": entry.get("outcome", ""),
@@ -1102,12 +1368,47 @@ async def get_bulk_upload_log(
             "image_uuid": entry.get("image_uuid", ""),
             "existing_uuid": entry.get("existing_uuid", ""),
         })
+    if not rows:
+        for index, entry in sorted(
+            ledger_from_manifest(manifest).items(), key=lambda item: int(item[0])
+        ):
+            rows.append({
+                "filename": entry.get("filename", ""),
+                "outcome": entry.get("outcome", ""),
+                "reason": entry.get("reason", ""),
+                "image_uuid": entry.get("image_uuid", ""),
+                "existing_uuid": entry.get("existing_uuid", ""),
+            })
+    image_uuids = {row["image_uuid"] for row in rows if row["image_uuid"]}
+    pipeline_errors = {}
+    if image_uuids:
+        pipeline_errors = {
+            image_uuid: (state or "", error or "", stage or "")
+            for image_uuid, state, error, stage in (await db.execute(
+                select(
+                    Image.uuid, Image.status, Image.pipeline_error,
+                    Image.pipeline_failed_stage,
+                ).where(
+                    Image.bulk_upload_job_id == job.id,
+                    Image.uuid.in_(image_uuids),
+                )
+            )).all()
+        }
+    for row in rows:
+        state, row["pipeline_error"], row["pipeline_failed_stage"] = pipeline_errors.get(
+            row["image_uuid"], ("", "", "")
+        )
+        if row["outcome"] in {"processed", "queued"} and state:
+            row["outcome"] = state
 
     def stream() -> Any:
         buf = io.StringIO()
         writer = csv.DictWriter(
             buf,
-            fieldnames=["filename", "outcome", "reason", "image_uuid", "existing_uuid"],
+            fieldnames=[
+                "filename", "outcome", "reason", "image_uuid", "existing_uuid",
+                "pipeline_error", "pipeline_failed_stage",
+            ],
         )
         writer.writeheader()
         yield buf.getvalue()
@@ -1125,6 +1426,78 @@ async def get_bulk_upload_log(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
+
+
+@router.post("/jobs/{job_uuid}/retry-failed")
+async def retry_failed_bulk_images(
+    project_id: int,
+    job_uuid: str,
+    user: User = Depends(require_project_admin_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Retry failed pipeline stages without changing image annotations."""
+    job = (await db.execute(select(BulkUploadJob).where(
+        BulkUploadJob.project_id == project_id,
+        BulkUploadJob.uuid == job_uuid,
+    ).with_for_update())).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Bulk upload job not found")
+    if job.status not in {"failed", "partial", "done"}:
+        raise HTTPException(status_code=409, detail=f"Job is in status '{job.status}'")
+
+    failed_images = (await db.execute(select(Image).where(
+        Image.bulk_upload_job_id == job.id,
+        Image.status == "failed",
+    ).with_for_update())).scalars().all()
+    retryable = []
+    for image in failed_images:
+        stage = image.pipeline_failed_stage
+        if stage not in {"detection", "classification"}:
+            continue
+        image.status = "pending" if stage == "detection" else "detected"
+        image.pipeline_updated_at = datetime.now(timezone.utc)
+        image.pipeline_attempts = 0
+        image.pipeline_error = None
+        image.pipeline_failed_stage = None
+        image.pipeline_claim_id = None
+        detection_ids = [row[0] for row in (await db.execute(
+            select(Detection.id).where(Detection.image_id == image.id).order_by(Detection.id)
+        )).all()]
+        retryable.append((
+            image.uuid, image.origin, stage, image.storage_path, image.camera_id, detection_ids,
+        ))
+
+    if retryable:
+        job.status = "processing"
+        job.finished_at = None
+        job.error_message = None
+    await db.commit()
+
+    for image_uuid, origin, stage, storage_path, camera_id, detection_ids in retryable:
+        if stage == "detection":
+            queue_name = QUEUE_IMAGE_INGESTED_BULK if origin == "bulk" else QUEUE_IMAGE_INGESTED
+            message = {
+                "image_uuid": image_uuid,
+                "storage_path": storage_path,
+                "camera_id": camera_id,
+                "origin": origin,
+            }
+        else:
+            queue_name = QUEUE_DETECTION_COMPLETE_BULK if origin == "bulk" else QUEUE_DETECTION_COMPLETE
+            message = {
+                "image_uuid": image_uuid,
+                "num_detections": len(detection_ids),
+                "detection_ids": detection_ids,
+                "origin": origin,
+            }
+        RedisQueue(queue_name).publish(message)
+
+    return {
+        "job_uuid": job_uuid,
+        "status": "processing" if retryable else job.status,
+        "retried_files": len(retryable),
+        "unretryable_files": len(failed_images) - len(retryable),
+    }
 
 
 @router.get("/jobs/{job_uuid}", response_model=BulkUploadJobResponse)
@@ -1153,12 +1526,14 @@ async def get_bulk_upload_job(
         )
     job, cam_name, email = row
     processed_counts = await _pipeline_done_counts(db, [job.id])
-    await _finalise_done_jobs(db, [job], processed_counts)
+    failed_counts = await _pipeline_failed_counts(db, [job.id])
+    await _finalise_done_jobs(db, [job], processed_counts, failed_counts)
     positions = await _queue_positions(db, project_id)
     return _job_to_response(
         job,
         camera_name=cam_name,
         created_by_email=email,
         processed_files=processed_counts.get(job.id, 0),
+        pipeline_failed_files=failed_counts.get(job.id, 0),
         queue_position=positions.get(job.id),
     )

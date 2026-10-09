@@ -6,7 +6,7 @@
  * to the job, then finalizes. The worker takes over for detection
  * and classification.
  */
-import apiClient from './client';
+import apiClient from './client.ts';
 
 export interface BulkUploadManifest {
   total_entries: number;
@@ -40,9 +40,22 @@ export interface BulkUploadJob {
     | 'awaiting_confirmation'
     | 'processing'
     | 'done'
+    | 'partial'
     | 'failed'
     | 'cancelled';
   total_files: number;
+  /** Number of per-file POSTs durably accepted into staging. */
+  uploaded_files?: number;
+  /** Classified image count. `processed_files` remains the compatibility alias. */
+  classified_files?: number;
+  /** Upload and pipeline failures, kept separate from classified work. */
+  failed_files?: number;
+  /** Upload failures are included in failed_files and exposed separately. */
+  upload_failed_files?: number;
+  duplicate_files?: number;
+  pending_files?: number;
+  /** Legacy jobs may have no trustworthy per-file history. */
+  outcome_warning?: string | null;
   processed_files: number;
   skipped_files: number;
   error_message: string | null;
@@ -60,6 +73,78 @@ export interface BulkUploadJob {
   finished_at: string | null;
   created_at: string;
   created_by_email: string | null;
+}
+
+export interface BulkUploadOutcomeCounts {
+  expected: number;
+  uploaded: number;
+  classified: number;
+  failed: number;
+  uploadFailed: number;
+  duplicates: number;
+  skipped: number;
+  pending: number;
+}
+
+/** Derive the separately reported outcomes from the production job response. */
+export function bulkUploadOutcomeCounts(job: BulkUploadJob): BulkUploadOutcomeCounts {
+  return {
+    expected: job.total_files,
+    uploaded: job.uploaded_files ?? 0,
+    classified: job.classified_files ?? job.processed_files,
+    // The API intentionally returns aggregate counts and strips the private
+    // per-index ledger from list/detail responses.
+    failed: Math.max(0, (job.failed_files ?? 0) - (job.upload_failed_files ?? 0)),
+    uploadFailed: job.upload_failed_files ?? 0,
+    duplicates: job.duplicate_files ?? job.manifest?.process_summary?.duplicates ?? 0,
+    skipped: job.skipped_files,
+    pending: job.pending_files ?? 0,
+  };
+}
+
+export function isBulkUploadSuccessful(job: BulkUploadJob): boolean {
+  return job.status === 'done'
+    && !job.outcome_warning
+    && (job.failed_files ?? 0) === 0
+    && (job.pending_files ?? 0) === 0;
+}
+
+export function bulkUploadCompletionMessage(job: BulkUploadJob): string {
+  if (job.outcome_warning) return `Outcome unknown: ${job.outcome_warning}`;
+  const counts = bulkUploadOutcomeCounts(job);
+  return `${counts.classified} classified, ${counts.duplicates} duplicate, ${counts.skipped} skipped, ${counts.failed} failed, ${counts.uploadFailed} upload failed, ${counts.pending} pending`;
+}
+
+export type BulkUploadStatusTone = 'success' | 'warning' | 'failure' | 'muted' | 'active';
+
+export function bulkUploadStatusLabel(job: BulkUploadJob): string {
+  if (job.status === 'done' && job.outcome_warning) return 'Outcome unknown';
+  if (job.status === 'partial') return 'Partial';
+  if (job.status === 'done') return 'Done';
+  if (job.status === 'failed') return 'Failed';
+  if (job.status === 'cancelled') return 'Cancelled';
+  return 'Active';
+}
+
+export function bulkUploadStatusTone(job: BulkUploadJob): BulkUploadStatusTone {
+  if (job.status === 'done' && job.outcome_warning) return 'warning';
+  if (job.status === 'partial') return 'warning';
+  if (job.status === 'done' && isBulkUploadSuccessful(job)) return 'success';
+  if (job.status === 'failed' || job.status === 'done') return 'failure';
+  if (job.status === 'cancelled') return 'muted';
+  return 'active';
+}
+
+export function bulkUploadOutcomeText(
+  job: BulkUploadJob,
+  live?: { uploaded: number; uploadFailed: number },
+): string {
+  if (job.outcome_warning) return 'Historical per-file counts are unknown.';
+  const counts = bulkUploadOutcomeCounts(job);
+  const uploaded = live?.uploaded ?? counts.uploaded;
+  return `Expected ${counts.expected} · Uploaded ${uploaded} · Classified ${counts.classified}`
+    + ` · Failed ${counts.failed} · Upload failed ${Math.max(counts.uploadFailed, live?.uploadFailed ?? 0)}`
+    + ` · Duplicates ${counts.duplicates} · Skipped ${counts.skipped} · Pending ${counts.pending}`;
 }
 
 export interface ScanProfileEntry {
@@ -81,6 +166,21 @@ export interface ScanProfileResponse {
   // split per camera before uploading.
   multiple_cameras: boolean;
   device_ids: string[];
+}
+
+export type UploadFailureReason = 'request_too_large' | 'upload_failed' | 'cancelled';
+
+export interface UploadFailureOutcome {
+  index: number;
+  filename: string;
+  reason: UploadFailureReason;
+}
+
+export interface RetryFailedResponse {
+  job_uuid: string;
+  status: BulkUploadJob['status'];
+  retried_files: number;
+  unretryable_files: number;
 }
 
 export const bulkUploadApi = {
@@ -168,6 +268,20 @@ export const bulkUploadApi = {
     );
   },
 
+  /** Persist every browser-observed failure before finalization. */
+  reportOutcomes: async (
+    projectId: number,
+    jobUuid: string,
+    files: UploadFailureOutcome[],
+  ): Promise<BulkUploadJob> => {
+    if (files.length === 0) throw new Error('At least one upload outcome is required');
+    const response = await apiClient.post<BulkUploadJob>(
+      `/api/projects/${projectId}/bulk-upload/jobs/${jobUuid}/outcomes`,
+      { files },
+    );
+    return response.data;
+  },
+
   /**
    * Mark a job as done uploading and start the worker pipeline.
    */
@@ -250,6 +364,13 @@ export const bulkUploadApi = {
   ): Promise<{ deleted: number; failed: number }> => {
     const response = await apiClient.delete<{ deleted: number; failed: number }>(
       `/api/projects/${projectId}/bulk-upload/jobs/${jobUuid}/images`,
+    );
+    return response.data;
+  },
+
+  retryFailed: async (projectId: number, jobUuid: string): Promise<RetryFailedResponse> => {
+    const response = await apiClient.post<RetryFailedResponse>(
+      `/api/projects/${projectId}/bulk-upload/jobs/${jobUuid}/retry-failed`,
     );
     return response.data;
   },

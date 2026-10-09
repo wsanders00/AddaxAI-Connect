@@ -20,7 +20,9 @@ import {
   bulkUploadApi,
   type BulkUploadJob,
   type BulkUploadManifest,
-} from '../api/bulkUpload';
+  type UploadFailureOutcome,
+  type UploadFailureReason,
+} from '../api/bulkUpload.ts';
 import type { ScanEntry } from '../workers/bulkScanWorker';
 
 const UPLOAD_CONCURRENCY = 4;
@@ -37,7 +39,8 @@ export interface ActiveUpload {
   // pre-flight dedup hits). Counted into "done" so the bar and
   // percent reflect what's left for THIS session.
   skipped: number;
-  failed: number;
+  /** Upload attempts that failed, separate from already uploaded indexes. */
+  uploadFailed: number;
   startedAt: number;
   // Set when the upload loop has finished sending everything and
   // called finalize. The store keeps the row "live" for a beat
@@ -45,9 +48,8 @@ export interface ActiveUpload {
   // back to server-recorded progress.
   done: boolean;
   // Set by cancelActive(). The loop reads it on each iteration
-  // and exits cleanly without calling finalize. The discard call
-  // happens once the loop has actually stopped, so MinIO doesn't
-  // see partial-state races.
+  // and exits cleanly. Cancellation outcomes are persisted before the
+  // server marks the job cancelled.
   cancelled: boolean;
   // Set if the upload loop hit an unrecoverable error (createJob,
   // finalize, hash-check). The row falls back to the server-
@@ -163,7 +165,7 @@ async function runNewUpload(
       total,
       uploaded: 0,
       skipped: 0,
-      failed: 0,
+      uploadFailed: 0,
       startedAt: Date.now(),
       done: false,
       cancelled: false,
@@ -172,8 +174,9 @@ async function runNewUpload(
   });
   args.onCacheInvalidate();
 
-  await runUploadLoop(args.projectId, job.uuid, args.files, validEntries, new Set(), set, get);
-  await finishOrCancel(args.projectId, job.uuid, set, get, args.onSuccess, args.onError, args.onCacheInvalidate);
+  const upload = await runUploadLoop(args.projectId, job.uuid, args.files, validEntries, new Set(), set, get, args.onError, args.onCacheInvalidate);
+  if (!upload) return;
+  await finishOrCancel(args.projectId, job.uuid, upload, set, get, args.onSuccess, args.onError, args.onCacheInvalidate);
 }
 
 async function runResumeUpload(
@@ -205,7 +208,7 @@ async function runResumeUpload(
       total,
       uploaded: 0,
       skipped: alreadyUploaded.size,
-      failed: 0,
+      uploadFailed: 0,
       startedAt: Date.now(),
       done: false,
       cancelled: false,
@@ -214,7 +217,7 @@ async function runResumeUpload(
   });
   args.onCacheInvalidate();
 
-  await runUploadLoop(
+  const upload = await runUploadLoop(
     args.projectId,
     args.resumeJob.uuid,
     args.files,
@@ -222,10 +225,14 @@ async function runResumeUpload(
     alreadyUploaded,
     set,
     get,
+    args.onError,
+    args.onCacheInvalidate,
   );
+  if (!upload) return;
   await finishOrCancel(
     args.projectId,
     args.resumeJob.uuid,
+    upload,
     set,
     get,
     args.onSuccess,
@@ -242,60 +249,164 @@ async function runUploadLoop(
   alreadyUploaded: Set<number>,
   set: (partial: Partial<State>) => void,
   get: () => State & Actions,
-) {
+  onError: (msg: string) => void,
+  onCacheInvalidate: () => void,
+): Promise<UploadBatchResult | null> {
   const queue = validEntries
     .map((e, i) => ({ entry: e, position: i }))
     .filter((row) => !alreadyUploaded.has(row.position));
-  let cursor = 0;
+  const current = () => get().active;
+  const isCancelled = () => Boolean(current()?.cancelled);
+  const updateCounts = (uploaded: number, failed: number) => {
+    const a = get().active;
+    if (a) set({ active: { ...a, uploaded, uploadFailed: failed } });
+  };
+  try {
+    const result = await uploadFilesWithOutcomes(
+      queue.map(({ entry, position }) => ({
+        index: position,
+        filename: entry.relative_path.split('/').pop() || entry.relative_path,
+        file: files[entry.index],
+      })),
+      {
+        upload: (index, file) => bulkUploadApi.uploadFile(projectId, jobUuid, index, file),
+        reportOutcomes: async (outcomes) => {
+          await bulkUploadApi.reportOutcomes(projectId, jobUuid, outcomes);
+        },
+        isCancelled,
+        onProgress: updateCounts,
+      },
+    );
+    return { ...result, previouslyUploaded: alreadyUploaded.size };
+  } catch (err: any) {
+    const active = current();
+    if (active) set({ active: { ...active, errored: true, done: true } });
+    onError(`Could not save upload outcomes. The job was not finalized; resume it to reconcile the files. ${errorDetail(err)}`);
+    onCacheInvalidate();
+    return null;
+  }
+}
 
-  const isCancelled = () => Boolean(get().active?.cancelled);
-  const incUploaded = () => {
-    const a = get().active;
-    if (a) set({ active: { ...a, uploaded: a.uploaded + 1 } });
-  };
-  const incFailed = () => {
-    const a = get().active;
-    if (a) set({ active: { ...a, failed: a.failed + 1 } });
-  };
+interface UploadBatchResult {
+  uploaded: number;
+  failed: number;
+  outcomes: UploadFailureOutcome[];
+  cancelled: boolean;
+  previouslyUploaded: number;
+}
+
+interface UploadBatchDependencies {
+  upload: (index: number, file: File) => Promise<void>;
+  reportOutcomes: (outcomes: UploadFailureOutcome[]) => Promise<void>;
+  isCancelled: () => boolean;
+  onProgress?: (uploaded: number, failed: number) => void;
+  concurrency?: number;
+  retries?: number;
+  retryDelay?: (attempt: number) => Promise<void>;
+}
+
+/**
+ * Production upload loop, kept independent of React so its retry and outcome
+ * contract can be exercised directly by the Node test suite.
+ */
+export async function uploadFilesWithOutcomes(
+  files: { index: number; filename: string; file: File }[],
+  dependencies: UploadBatchDependencies,
+): Promise<Omit<UploadBatchResult, 'previouslyUploaded'>> {
+  const queue = [...files];
+  const concurrency = dependencies.concurrency ?? UPLOAD_CONCURRENCY;
+  const retries = dependencies.retries ?? UPLOAD_RETRIES;
+  const retryDelay = dependencies.retryDelay
+    ?? ((attempt: number) => new Promise<void>((resolve) => setTimeout(resolve, 500 * attempt)));
+  const attempted = new Set<number>();
+  const outcomes: UploadFailureOutcome[] = [];
+  let cursor = 0;
+  let uploaded = 0;
+  let failed = 0;
 
   const worker = async () => {
-    while (true) {
-      if (isCancelled()) return;
+    while (!dependencies.isCancelled()) {
       const next = queue[cursor];
       if (!next) return;
       cursor += 1;
-      const { entry, position } = next;
-      let attempt = 0;
-      while (attempt < UPLOAD_RETRIES) {
+      attempted.add(next.index);
+      let failure: UploadFailureReason | null = null;
+      for (let attempt = 1; attempt <= retries; attempt += 1) {
         try {
-          await bulkUploadApi.uploadFile(
-            projectId,
-            jobUuid,
-            position,
-            files[entry.index],
-          );
-          incUploaded();
+          await dependencies.upload(next.index, next.file);
+          uploaded += 1;
+          dependencies.onProgress?.(uploaded, failed);
           break;
-        } catch (err) {
-          attempt += 1;
-          if (attempt >= UPLOAD_RETRIES) {
-            incFailed();
-          } else {
-            await new Promise((r) => setTimeout(r, 500 * attempt));
+        } catch (error) {
+          if (dependencies.isCancelled()) {
+            failure = 'cancelled';
+            break;
           }
+          if (uploadHttpStatus(error) === 413) {
+            failure = 'request_too_large';
+            break;
+          }
+          if (attempt === retries) {
+            failure = 'upload_failed';
+            break;
+          }
+          await retryDelay(attempt);
         }
+      }
+      if (failure) {
+        outcomes.push({ index: next.index, filename: next.filename, reason: failure });
+        if (failure !== 'cancelled') failed += 1;
+        dependencies.onProgress?.(uploaded, failed);
       }
     }
   };
 
-  await Promise.all(
-    Array.from({ length: UPLOAD_CONCURRENCY }, () => worker()),
-  );
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  if (dependencies.isCancelled()) {
+    for (const file of queue) {
+      if (!attempted.has(file.index)) {
+        outcomes.push({ index: file.index, filename: file.filename, reason: 'cancelled' });
+      }
+    }
+  }
+  outcomes.sort((a, b) => a.index - b.index);
+  if (outcomes.length > 0) {
+    // The response intentionally contains aggregate counts, not the private
+    // per-index ledger, so the client cannot safely reassign an outcome here.
+    await dependencies.reportOutcomes(outcomes);
+  }
+  return { uploaded, failed, outcomes, cancelled: dependencies.isCancelled() };
+}
+
+function uploadHttpStatus(error: any): number | undefined {
+  return error?.response?.status ?? error?.status;
+}
+
+function errorDetail(error: any): string {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+    return detail.message;
+  }
+  return error?.message || 'Unknown error';
+}
+
+export function formatFinalizeError(error: any): string {
+  const detail = error?.response?.data?.detail;
+  if (error?.response?.status === 409 && detail && typeof detail === 'object') {
+    const count = Number(detail.missing_index_count ?? detail.pending_files ?? 0);
+    const indexes = Array.isArray(detail.missing_indexes)
+      ? detail.missing_indexes.slice(0, 8).join(', ')
+      : '';
+    return `Upload could not be finalized: ${count} file${count === 1 ? '' : 's'} remain unresolved${indexes ? ` (indexes ${indexes})` : ''}. Resume the upload to reconcile them.`;
+  }
+  return errorDetail(error);
 }
 
 async function finishOrCancel(
   projectId: number,
   jobUuid: string,
+  upload: Omit<UploadBatchResult, 'previouslyUploaded'> & { previouslyUploaded: number },
   set: (partial: Partial<State>) => void,
   get: () => State & Actions,
   onSuccess: () => void,
@@ -317,7 +428,33 @@ async function finishOrCancel(
     return;
   }
   try {
-    await bulkUploadApi.finalize(projectId, jobUuid);
+    const finalized = await bulkUploadApi.finalize(projectId, jobUuid);
+    onCacheInvalidate();
+    if (finalized.status !== 'processing' || upload.failed > 0 || upload.outcomes.length > 0) {
+      const failures = upload.outcomes.filter((item) => item.reason !== 'cancelled');
+      const tooLarge = failures.filter((item) => item.reason === 'request_too_large').length;
+      const otherFailed = failures.length - tooLarge;
+      let message = `Upload outcome: ${upload.uploaded + upload.previouslyUploaded} files accepted and queued for analysis.`;
+      const aggregateShowsAcceptedOutcome = upload.failed > 0
+        && finalized.upload_failed_files !== undefined
+        && finalized.upload_failed_files < upload.failed;
+      if (aggregateShowsAcceptedOutcome) {
+        message = 'Some upload responses could not be matched to per-file results. Check the recorded counts and resume any unresolved files.';
+      } else if (tooLarge > 0) {
+        message += ` ${tooLarge} file${tooLarge === 1 ? ' was' : 's were'} too large; reduce the file size and resume.`;
+      }
+      if (!aggregateShowsAcceptedOutcome && otherFailed > 0) {
+        message += ` ${otherFailed} upload${otherFailed === 1 ? ' failed' : 's failed'}; resume to retry.`;
+      }
+      if (upload.cancelled) message += ' Remaining files were marked cancelled.';
+      if (finalized.status === 'failed') {
+        message = `${finalized.error_message || 'No files were accepted.'}${tooLarge > 0 ? ` ${tooLarge} file${tooLarge === 1 ? ' was' : 's were'} over the request limit; reduce its size before resuming.` : ''}`;
+      }
+      onError(message);
+      const a = get().active;
+      if (a && a.jobUuid === jobUuid) set({ active: { ...a, done: true, errored: true } });
+      return;
+    }
     const a = get().active;
     if (a && a.jobUuid === jobUuid) {
       set({ active: { ...a, done: true } });
@@ -332,12 +469,10 @@ async function finishOrCancel(
       if (cur && cur.jobUuid === jobUuid) set({ active: null });
     }, 3000);
   } catch (err: any) {
-    onError(
-      `Failed to start processing, ${err.response?.data?.detail || err.message}`,
-    );
+    onError(formatFinalizeError(err));
     const a = get().active;
     if (a && a.jobUuid === jobUuid) {
-      set({ active: { ...a, errored: true } });
+      set({ active: { ...a, errored: true, done: true } });
     }
   }
 }
