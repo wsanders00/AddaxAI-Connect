@@ -41,6 +41,28 @@ It's made for nature conservation. The software is free and open source, with no
 
 Software by [Addax Data Science](https://addaxdatascience.com), camera hardware by [Smart Parks](https://www.smartparks.org). Built on [AddaxAI](https://github.com/PetervanLunteren/addaxai) for the ML backbone.
 
+## This fork and the development branch
+
+This public fork maintains application changes for our personal trail-camera deployment of [upstream AddaxAI Connect](https://github.com/PetervanLunteren/AddaxAI-Connect). The original project is maintained upstream; the documentation links and upstream badges in this README refer to that project.
+
+Our branch policy is:
+
+- **`main`** follows upstream history and stays free of our custom changes.
+- **`development`** is our deployment branch. It combines reviewed upstream updates with the changes we maintain below.
+- **Feature and fix branches** start from `development` and merge back into it after review and relevant validation.
+
+### Changes we maintain
+
+- **Deployment-aware service health.** Checks reflect the workers and features configured to run. Optional services appear as disabled, enabled workers require fresh heartbeats, and pipeline activity is shown separately from service health. Dependency checks have bounded timeouts. See [deployment health configuration](docs/deployment-health.md).
+- **Bulk-upload outcomes and size limits.** Expected file counts and per-file outcomes are recorded durably, with separate upload, duplicate, failure, pending and classification counts. The UI reports partial or failed results and warns when historical counts cannot be established. The bulk-upload route allows a 50 MiB file with a bounded 52 MiB request limit for multipart overhead; other ingestion retains its existing default limit.
+- **Interrupted-processing recovery.** Database-backed claims, lease renewal and periodic reconciliation support recovery of stale work, including gaps between database writes and queue delivery. Bounded retries, ownership checks and idempotent updates limit duplicate processing and preserve manually verified annotations. Complete end-to-end interrupted-upload recovery still requires further validation; these mechanisms are not a guarantee that every interruption is handled correctly.
+
+### Deployment and public-repository boundaries
+
+Our installation uses rootless Podman and separates the web application, database and queues from GPU processing and S3-compatible media storage. Host configuration and operational runbooks are maintained separately. The public deployment documentation describes upstream defaults.
+
+Keep contributions here generic: application code, tests and documentation. Credentials, private endpoints, host inventories, camera locations, original media, database copies and raw operational logs stay outside this public repository. Upstream updates are reviewed and validated on `development` before deployment; updating `main` does not deploy them.
+
 ## Demo
 
 Try it yourself: [demo.addaxai.com](https://demo.addaxai.com/login)
