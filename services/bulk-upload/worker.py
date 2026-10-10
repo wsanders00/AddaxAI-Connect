@@ -19,7 +19,10 @@ refactor lands. New jobs use the prefix layout.
 """
 import contextlib
 import hashlib
+import json
+import math
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -29,6 +32,7 @@ import zipfile
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, Optional
+from zoneinfo import ZoneInfo
 
 import redis
 from redis.backoff import NoBackoff
@@ -46,7 +50,7 @@ from shared.camera_profiles import identify_camera_profile
 from shared.config import get_settings
 from shared.database import get_db_session
 from shared.logger import get_logger, set_image_id
-from shared.models import BulkUploadJob, Camera, Image
+from shared.models import BulkUploadJob, Camera, Deployment, Image, ServerSettings, Site
 from shared.bulk_outcomes import ledger_from_manifest, terminal_status
 from shared.queue import (
     QUEUE_BULK_UPLOAD_JOB,
@@ -65,6 +69,55 @@ from storage_operations import (  # noqa: E402
 )
 from validators import validate_image  # noqa: E402
 from utils import is_valid_gps  # noqa: E402
+
+
+def _archive_timezone_fingerprint(timezone_name: str) -> str:
+    return hashlib.sha256(json.dumps(
+        {"timezone": timezone_name}, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+
+
+def _validate_archive_exif_time(exif: dict, filepath: str, archive_entry: dict) -> datetime:
+    """Require staged JPEG EXIF time and offset to match archived wall-time provenance."""
+    provenance = archive_entry["provenance"]
+    timezone_name = archive_entry["app_timezone"]
+    target = datetime.fromisoformat(provenance["capture_app_local"])
+    if target.tzinfo is not None:
+        raise ValueError("Archive capture_app_local must be naive local wall time")
+    actual = get_corrected_datetime(exif, filepath, 0)
+    precision = provenance["capture_precision_seconds"]
+    if (isinstance(precision, bool) or not isinstance(precision, (int, float))
+            or not math.isfinite(precision) or precision < 0 or precision > 86400):
+        raise ValueError("Archive capture precision is invalid")
+    # EXIF DateTimeOriginal is second-granular. Precision is descriptive
+    # provenance and must never widen the timestamp integrity check.
+    tolerance = 1.0
+    if abs((actual - target).total_seconds()) > tolerance:
+        raise ValueError("JPEG DateTimeOriginal does not match archive capture_app_local")
+
+    zone = ZoneInfo(timezone_name)
+    candidates = set()
+    for fold in (0, 1):
+        aware = target.replace(tzinfo=zone, fold=fold)
+        roundtrip = aware.astimezone(timezone.utc).astimezone(zone)
+        if roundtrip.replace(tzinfo=None) == target:
+            candidates.add(aware.utcoffset())
+    if not candidates:
+        raise ValueError("Archive capture_app_local is a nonexistent wall time")
+    if len(candidates) > 1:
+        raise ValueError("Archive capture_app_local is ambiguous")
+    expected_offset = next(iter(candidates))
+    raw_offset = exif.get("OffsetTimeOriginal") or exif.get("OffsetTime")
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", str(raw_offset or ""))
+    if expected_offset is None:
+        raise ValueError("Archive timezone has no offset at capture time")
+    if raw_offset and match is None:
+        raise ValueError("JPEG OffsetTimeOriginal is malformed")
+    actual_seconds = ((int(match.group(2)) * 3600 + int(match.group(3)) * 60)
+                      * (1 if match.group(1) == "+" else -1)) if match else None
+    if actual_seconds is not None and int(expected_offset.total_seconds()) != actual_seconds:
+        raise ValueError("JPEG OffsetTimeOriginal does not match the pinned application timezone")
+    return actual
 
 PROGRESS_PERSIST_EVERY = 25
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
@@ -377,6 +430,7 @@ def _process_zip_entry(
     use_profile: bool = False,
     time_offset_seconds: int = 0,
     source_index: Optional[int] = None,
+    archive_entry: Optional[dict] = None,
     *,
     claim_id: str,
 ) -> str:
@@ -459,7 +513,25 @@ def _process_zip_entry(
         exif = extract_exif(tmp_path)
         clean_filename = os.path.basename(name)
 
-        if use_profile:
+        if archive_entry is not None:
+            provenance = archive_entry["provenance"]
+            try:
+                _validate_archive_exif_time(exif, tmp_path, archive_entry)
+                captured_at = datetime.fromisoformat(provenance["capture_app_local"])
+            except (KeyError, TypeError, ValueError):
+                return {"outcome": "failed", "reason": "invalid_archive_capture_time"}
+            record_gps = gps_location
+            record_deployment_id = bulk_deployment_id
+            exif = dict(exif)
+            exif["archive_import"] = {
+                "format": "addax-archive-ready-v1",
+                "batch_id": archive_entry.get("batch_id"),
+                "revision_sha256": archive_entry.get("revision_sha256"),
+                "file": archive_entry,
+                "origin": "bulk",
+                "is_verified": False,
+            }
+        elif use_profile:
             # Mode A: identify the camera profile and extract metadata the
             # same way live ingestion does. relative_path is empty because a
             # browser upload has no FTPS upload path, so only EXIF profiles
@@ -895,6 +967,7 @@ def _process_prefix_job(
     bulk_deployment_id: Optional[int] = None,
     use_profile: bool = False,
     time_offset_seconds: int = 0,
+    archive_manifest: Optional[dict] = None,
     *,
     claim_id: str,
 ) -> None:
@@ -911,6 +984,8 @@ def _process_prefix_job(
     failed = 0
 
     object_keys = sorted(_list_prefix(storage, staged_prefix))
+    archive_files = ({entry.get("index"): entry for entry in archive_manifest.get("files", [])}
+                     if archive_manifest is not None else {})
     present_indexes = {
         index for index in (_staged_file_index(key) for key in object_keys)
         if index is not None
@@ -935,21 +1010,35 @@ def _process_prefix_job(
         )
         try:
             raw = storage.download_fileobj(BUCKET_BULK_UPLOAD_STAGING, key)
-            with _file_timeout(PER_FILE_TIMEOUT_SECONDS):
-                result = _process_zip_entry(
-                    filename,
-                    raw,
-                    camera_id,
-                    camera_storage_id,
-                    gps_location,
-                    bulk_queue,
-                    job_id,
-                    bulk_deployment_id,
-                    use_profile,
-                    time_offset_seconds,
-                    source_index=file_index,
-                    claim_id=claim_id,
-                )
+            archive_entry = archive_files.get(file_index)
+            if archive_manifest is not None and (
+                archive_entry is None
+                or len(raw) != archive_entry.get("size_bytes")
+                or hashlib.sha256(raw).hexdigest() != archive_entry.get("ready_sha256")
+            ):
+                result = {"outcome": "failed", "reason": "archive_manifest_mismatch"}
+            else:
+                with _file_timeout(PER_FILE_TIMEOUT_SECONDS):
+                    result = _process_zip_entry(
+                        filename,
+                        raw,
+                        camera_id,
+                        camera_storage_id,
+                        gps_location,
+                        bulk_queue,
+                        job_id,
+                        bulk_deployment_id,
+                        use_profile,
+                        time_offset_seconds,
+                        source_index=file_index,
+                        archive_entry=(dict(
+                            archive_entry,
+                            batch_id=archive_manifest.get("batch_id"),
+                            revision_sha256=archive_manifest.get("revision_sha256"),
+                            app_timezone=archive_manifest.get("app_timezone"),
+                        ) if archive_manifest is not None and archive_entry is not None else None),
+                        claim_id=claim_id,
+                    )
         except _FileTimeout:
             logger.warning(
                 "Bulk upload object timed out",
@@ -1222,18 +1311,19 @@ def _process_job(job_uuid: str) -> None:
         staged_object_key = job.staged_object_key
         manifest = job.manifest or {}
         time_offset_seconds = job.time_offset_seconds
+        archive_manifest = job.archive_manifest
 
         # Mode A (no pinned site): run the camera-profile hunt per image and
         # resolve site + deployment from each image's GPS, exactly like FTPS.
         # Mode B (pinned site): attach the whole batch to one deployment at the
         # chosen site.
-        use_profile = not manifest.get("site_id")
+        use_profile = not archive_manifest and not manifest.get("site_id")
 
         # In Mode B, default each image's location to where the camera is now
         # (its most recent deployment site). Unused in Mode A, where per-image
         # GPS drives the deployment, so the lookup is skipped there.
         gps_location = None
-        if not use_profile:
+        if not use_profile and archive_manifest is None:
             loc_row = session.execute(
                 text("""
                     SELECT ST_Y(s.location::geometry) AS lat, ST_X(s.location::geometry) AS lon
@@ -1256,7 +1346,44 @@ def _process_job(job_uuid: str) -> None:
     # Mode B pins every image to one deployment at the chosen site. The
     # client already applied the job's clock correction to date_range.
     bulk_deployment_id = None
-    if not use_profile:
+    if archive_manifest is not None:
+        try:
+            with get_db_session() as session:
+                deployment = session.execute(select(Deployment).where(
+                    Deployment.id == job.deployment_id,
+                    Deployment.camera_id == camera_id,
+                )).scalar_one_or_none()
+                target_site = session.get(Site, deployment.site_id) if deployment and deployment.site_id else None
+                settings = session.execute(select(ServerSettings).limit(1)).scalar_one_or_none()
+                current_timezone = settings.timezone if settings and settings.timezone else "UTC"
+                if (camera.project_id != job.project_id or deployment is None or target_site is None
+                        or target_site.project_id != job.project_id
+                        or archive_manifest.get("app_timezone") != current_timezone
+                        or archive_manifest.get("app_timezone_fingerprint") != _archive_timezone_fingerprint(current_timezone)):
+                    raise RuntimeError("Archive target or timezone settings changed before processing")
+                for entry in archive_manifest.get("files", []):
+                    try:
+                        local_day = datetime.fromisoformat(entry["provenance"]["capture_app_local"]).date()
+                    except (TypeError, ValueError, KeyError):
+                        raise RuntimeError("Archive manifest has an invalid capture timestamp")
+                    if local_day < deployment.start_date or (deployment.end_date and local_day > deployment.end_date):
+                        raise RuntimeError("Archive capture time falls outside the selected deployment")
+                site_location = session.execute(text(
+                    "SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lon FROM sites WHERE id = :site_id"
+                ), {"site_id": target_site.id}).fetchone()
+                if site_location is None:
+                    raise RuntimeError("Archive deployment site has no location")
+                gps_location = (site_location.lat, site_location.lon)
+                bulk_deployment_id = deployment.id
+        except Exception as exc:
+            logger.error("Archive bulk job preflight failed", job_uuid=job_uuid, error=str(exc))
+            _set_status(
+                job_uuid, claim_id=claim_id, status="failed",
+                error_message=str(exc), finished_at=datetime.now(timezone.utc),
+                pipeline_error=str(exc)[:1000], pipeline_claim_id=None,
+            )
+            return
+    elif not use_profile:
         site_id = manifest.get("site_id")
         date_range = manifest.get("date_range") or {}
         try:
@@ -1291,7 +1418,7 @@ def _process_job(job_uuid: str) -> None:
             _process_prefix_job(
                 job_uuid, job_id, camera_id, camera_storage_id,
                 gps_location, staged_object_key, bulk_deployment_id, use_profile,
-                time_offset_seconds, claim_id=claim_id,
+                time_offset_seconds, archive_manifest, claim_id=claim_id,
             )
         else:
             _process_legacy_zip_job(

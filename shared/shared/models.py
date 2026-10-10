@@ -778,6 +778,14 @@ class BulkUploadJob(Base):
     camera_id = Column(
         Integer, ForeignKey("cameras.id"), nullable=True, index=True
     )
+    # Explicit historical archive intake target. Existing device/site modes
+    # continue to derive deployments as before.
+    deployment_id = Column(
+        Integer, ForeignKey("deployments.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    client_batch_id = Column(String(200), nullable=True)
+    request_fingerprint = Column(String(64), nullable=True)
+    archive_manifest = Column(JSON, nullable=True)
     original_filename = Column(String(255), nullable=False)
     staged_object_key = Column(String(512), nullable=False)
     # queued | inspecting | awaiting_confirmation | processing | done | failed
@@ -819,6 +827,10 @@ class BulkUploadJob(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('project_id', 'client_batch_id', name='uq_bulk_job_project_client_batch'),
+    )
 
 
 class Rejection(Base):

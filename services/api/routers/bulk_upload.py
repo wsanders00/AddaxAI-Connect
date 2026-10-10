@@ -17,12 +17,15 @@ import asyncio
 import csv
 import hashlib
 import io
+import json
+import math
 import os
 import re
 import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import (
     APIRouter,
@@ -35,13 +38,14 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.camera_profiles import identify_camera_profile
 from shared.bulk_outcomes import ledger_from_manifest, merge_ledger_entry, summarize_ledger, terminal_status
 from shared.database import get_async_session
 from shared.logger import get_logger
-from shared.models import BulkUploadJob, Camera, Detection, Image, Site, User
+from shared.models import BulkUploadJob, Camera, Deployment, Detection, Image, ServerSettings, Site, User
 from shared.queue import (
     QUEUE_BULK_UPLOAD_JOB_PROCESS,
     QUEUE_DETECTION_COMPLETE,
@@ -83,6 +87,9 @@ UPLOAD_TTL = timedelta(hours=24)
 # workflow (one uploading, one or two waiting in processing) with
 # headroom.
 MAX_CONCURRENT_JOBS_PER_PROJECT = 3
+ARCHIVE_FORMAT = "addax-archive-ready-v1"
+MAX_ARCHIVE_MANIFEST_BYTES = 8 * 1024 * 1024
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # A bulk import lands its full size on the local data disk (first in the
 # staging bucket, then in raw-images) before the cold tier can drain it.
@@ -111,6 +118,11 @@ class BulkUploadJobResponse(BaseModel):
     uuid: str
     project_id: int
     camera_id: Optional[int]
+    deployment_id: Optional[int] = None
+    client_batch_id: Optional[str] = None
+    # Compact response summary; file-level provenance is returned with each
+    # Image row through its existing image_metadata API field.
+    archive_manifest: Optional[Dict[str, Any]] = None
     camera_name: Optional[str]
     original_filename: str
     status: str
@@ -135,21 +147,43 @@ class BulkUploadJobResponse(BaseModel):
     created_by_email: Optional[str]
 
 
+class BulkUploadFileReceipt(BaseModel):
+    index: int
+    accepted: bool
+    outcome: str
+    image_uuid: Optional[str] = None
+    existing_uuid: Optional[str] = None
+    pipeline_status: Optional[str] = None
+    reason: Optional[str] = None
+    pipeline_error: Optional[str] = None
+
+
+class BulkUploadReceiptsResponse(BaseModel):
+    files: List[BulkUploadFileReceipt]
+
+
 class CreateBulkUploadRequest(BaseModel):
     """
     Create an empty bulk-upload job. Files are uploaded separately.
 
-    Exactly one of `device_id` / `site_id` selects the mode:
+    Exactly one target mode is selected:
 
     - **device_id (Mode A):** the pre-flight matched a camera profile. The
       camera is resolved (and auto-created within this project if new), and
       each image's site + deployment are resolved from its own GPS, like FTPS.
     - **site_id (Mode B):** no profile matched, so the whole batch is pinned to
       one user-chosen site via a synthetic per-site camera.
+    - **camera_id + deployment_id (archive):** an explicitly registered
+      physical camera and historical deployment are pinned without profile or
+      GPS relocation behavior.
     """
     folder_name: str = Field(min_length=1, max_length=255)
     device_id: Optional[str] = Field(default=None, max_length=50)
     site_id: Optional[int] = None
+    camera_id: Optional[int] = Field(default=None, gt=0)
+    deployment_id: Optional[int] = Field(default=None, gt=0)
+    client_batch_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    archive_manifest: Optional[Dict[str, Any]] = None
     total_files: int = Field(ge=1, le=MAX_FILES_PER_JOB)
     # Sum of the byte sizes of the files about to be uploaded. Used to
     # refuse a job up front when it would not fit on the local data disk.
@@ -166,10 +200,17 @@ class CreateBulkUploadRequest(BaseModel):
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> "CreateBulkUploadRequest":
-        if bool(self.device_id) == bool(self.site_id):
+        modes = int(bool(self.device_id)) + int(bool(self.site_id)) + int(bool(self.camera_id) or bool(self.deployment_id))
+        if modes != 1 or bool(self.camera_id) != bool(self.deployment_id):
             raise ValueError(
-                "Provide exactly one of device_id (profile mode) or site_id (manual mode)"
+                "Provide exactly one complete target: device_id, site_id, or camera_id and deployment_id"
             )
+        if self.archive_manifest is not None and (not self.camera_id or not self.client_batch_id):
+            raise ValueError("Archive intake requires camera_id, deployment_id, and client_batch_id")
+        if self.camera_id is not None and self.archive_manifest is None:
+            raise ValueError("camera_id/deployment_id is reserved for archive intake")
+        if self.client_batch_id is not None and self.archive_manifest is None:
+            raise ValueError("client_batch_id is reserved for archive intake")
         return self
 
 
@@ -224,6 +265,242 @@ class CheckDuplicatesResponse(BaseModel):
 def _staging_prefix(project_id: int, job_uuid: str) -> str:
     """MinIO key prefix that holds every file for one bulk-upload job."""
     return f"{project_id}/{job_uuid}/"
+
+
+def _archive_timezone_fingerprint(timezone_name: str) -> str:
+    payload = json.dumps({"timezone": timezone_name}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _archive_local_utc_candidates(local_time: datetime, timezone_name: str) -> Dict[int, datetime]:
+    """Return valid fold interpretations; gaps return none, overlaps return two."""
+    if local_time.tzinfo is not None:
+        raise ValueError("capture_app_local must be naive wall time")
+    zone = ZoneInfo(timezone_name)
+    candidates: Dict[int, datetime] = {}
+    for fold in (0, 1):
+        aware = local_time.replace(tzinfo=zone, fold=fold)
+        utc_value = aware.astimezone(timezone.utc)
+        round_trip = utc_value.astimezone(zone)
+        if round_trip.replace(tzinfo=None) == local_time:
+            candidates[fold] = utc_value
+    # On ordinary timestamps both fold choices represent the same instant.
+    if len(candidates) == 2 and candidates[0] == candidates[1]:
+        return {0: candidates[0]}
+    return candidates
+
+
+def _archive_request_fingerprint(project_id: int, body: "CreateBulkUploadRequest", archive: Dict[str, Any]) -> str:
+    immutable_manifest = dict(archive)
+    # Generated wall-clock time is informational and may differ on a retry of
+    # the same pinned revision. The source marker/revision hashes identify it.
+    immutable_manifest.pop("generated_at_utc", None)
+    payload = {
+        "project_id": project_id, "camera_id": body.camera_id,
+        "deployment_id": body.deployment_id, "total_files": body.total_files,
+        "total_bytes": body.total_bytes, "folder_name": body.folder_name,
+        "archive_manifest": immutable_manifest,
+    }
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def _archive_file_bytes_match(entry: Dict[str, Any], data: bytes) -> bool:
+    return len(data) == entry.get("size_bytes") and hashlib.sha256(data).hexdigest() == entry.get("ready_sha256")
+
+
+def _require_idempotent_payload(existing_fingerprint: Optional[str], incoming_fingerprint: str) -> None:
+    if existing_fingerprint != incoming_fingerprint:
+        raise HTTPException(status_code=409, detail="client_batch_id was already used for a different archive request")
+
+
+def _bulk_receipt_rows(job: BulkUploadJob, image_states: Dict[str, Dict[str, Optional[str]]]) -> List[BulkUploadFileReceipt]:
+    ledger = ledger_from_manifest(job.manifest)
+    receipts = []
+    for index in range(job.total_files):
+        entry = ledger.get(str(index), {})
+        image_uuid = entry.get("image_uuid")
+        image_state = image_states.get(image_uuid, {}) if image_uuid else {}
+        receipts.append(BulkUploadFileReceipt(
+            index=index,
+            accepted=bool(entry.get("accepted")),
+            outcome=str(entry.get("outcome", "pending"))[:32],
+            image_uuid=image_uuid,
+            existing_uuid=entry.get("existing_uuid"),
+            pipeline_status=image_state.get("pipeline_status"),
+            reason=str(entry["reason"])[:160] if entry.get("reason") is not None else None,
+            pipeline_error=(str(image_state["pipeline_error"])[:512]
+                            if image_state.get("pipeline_error") is not None else None),
+        ))
+    return receipts
+
+
+def _validate_archive_manifest(archive: Dict[str, Any], project_id: int, camera_id: int,
+                               deployment_id: int, total_files: int) -> Dict[str, Any]:
+    """Validate and normalize the bounded, per-target ready-manifest contract."""
+    if len(json.dumps(archive, separators=(",", ":")).encode("utf-8")) > MAX_ARCHIVE_MANIFEST_BYTES:
+        raise HTTPException(status_code=413, detail="Archive manifest exceeds size limit")
+    if archive.get("format") != ARCHIVE_FORMAT:
+        raise HTTPException(status_code=422, detail="Unsupported archive manifest format")
+    allowed_top = {"format", "batch_id", "revision_sha256", "generated_at_utc",
+                   "source_batch_complete_marker_sha256", "app_timezone",
+                   "app_timezone_fingerprint", "files"}
+    if set(archive) - allowed_top:
+        raise HTTPException(status_code=422, detail="Archive manifest has unsupported fields")
+    for key in ("batch_id", "revision_sha256", "source_batch_complete_marker_sha256", "app_timezone_fingerprint"):
+        value = archive.get(key)
+        if (not isinstance(value, str) or len(value) > 128
+                or (key.endswith("sha256") and not SHA256_RE.fullmatch(value))):
+            raise HTTPException(status_code=422, detail=f"Invalid archive manifest field: {key}")
+    files = archive.get("files")
+    if not isinstance(files, list) or len(files) != total_files or not files:
+        raise HTTPException(status_code=422, detail="Archive manifest file count must match total_files")
+    if archive.get("app_timezone") is None or not isinstance(archive["app_timezone"], str) or len(archive["app_timezone"]) > 64:
+        raise HTTPException(status_code=422, detail="Invalid archive app_timezone")
+    indexes = set()
+    forbidden = {"origin", "is_verified", "verified_at", "verified_by_user_id",
+                 "image_metadata", "image_uuid", "status", "deployment_id", "camera_id", "project_id"}
+    for item in files:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="Invalid archive file entry")
+        if forbidden.intersection(item):
+            raise HTTPException(status_code=422, detail="Archive file contains server-owned fields")
+        allowed_file = {"index", "ready_relative_path", "ready_sha256", "size_bytes",
+                        "media_kind", "target", "provenance", "video_source_relative_path",
+                        "video_source_sha256", "selected_frame_pts_seconds", "extraction_policy"}
+        if set(item) - allowed_file:
+            raise HTTPException(status_code=422, detail="Archive file has unsupported fields")
+        index = item.get("index")
+        target = item.get("target")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0 or index >= total_files or index in indexes:
+            raise HTTPException(status_code=422, detail="Archive file indexes must be unique and in range")
+        indexes.add(index)
+        if not isinstance(target, dict) or target != {
+            "project_id": project_id, "camera_id": camera_id, "deployment_id": deployment_id,
+        }:
+            raise HTTPException(status_code=422, detail="Archive file target does not match the job target")
+        if not SHA256_RE.fullmatch(str(item.get("ready_sha256", ""))):
+            raise HTTPException(status_code=422, detail="Invalid ready_sha256")
+        if (isinstance(item.get("size_bytes"), bool) or not isinstance(item.get("size_bytes"), int)
+                or item["size_bytes"] <= 0 or item["size_bytes"] > MAX_FILE_SIZE_BYTES):
+            raise HTTPException(status_code=422, detail="Invalid archive file size")
+        path = item.get("ready_relative_path")
+        if (not isinstance(path, str) or len(path) > 512 or path.startswith("/")
+                or "\\" in path or ".." in path.split("/")
+                or not path.lower().endswith(ALLOWED_EXTENSIONS)):
+            raise HTTPException(status_code=422, detail="Invalid archive ready_relative_path")
+        if item.get("media_kind") not in ("photo", "video_still"):
+            raise HTTPException(status_code=422, detail="Invalid archive media_kind")
+        if item["media_kind"] == "video_still":
+            policy = item.get("extraction_policy")
+            pts = item.get("selected_frame_pts_seconds")
+            video_path = item.get("video_source_relative_path")
+            if (not isinstance(item.get("video_source_relative_path"), str)
+                    or not video_path or len(video_path) > 1024 or video_path.startswith("/")
+                    or "\\" in video_path or ".." in video_path.split("/")
+                    or not SHA256_RE.fullmatch(str(item.get("video_source_sha256", "")))
+                    or not isinstance(policy, dict)
+                    or not all(isinstance(policy.get(k), str) and len(policy[k]) <= 128
+                               for k in ("tool_version", "policy_version"))
+                    or not isinstance(policy.get("requested_position_seconds"), (int, float))
+                    or isinstance(policy.get("requested_position_seconds"), bool)
+                    or not math.isfinite(policy.get("requested_position_seconds", float("nan")))
+                    or not isinstance(pts, (int, float)) or isinstance(pts, bool) or not math.isfinite(pts) or pts < 0):
+                raise HTTPException(status_code=422, detail="Video still provenance is incomplete")
+        elif any(key in item for key in (
+            "video_source_relative_path", "video_source_sha256",
+            "selected_frame_pts_seconds", "extraction_policy",
+        )):
+            raise HTTPException(status_code=422, detail="Photo entry cannot include video extraction provenance")
+        provenance = item.get("provenance")
+        if not isinstance(provenance, dict):
+            raise HTTPException(status_code=422, detail="Archive provenance is required")
+        allowed_provenance = {"source_relative_path", "source_sha256", "derivative_id",
+                              "timestamp_basis", "timestamp_raw", "camera_timezone",
+                              "source_utc_offset_seconds", "clock_correction_seconds",
+                              "clock_correction_status", "capture_utc", "capture_app_local",
+                              "capture_precision_seconds", "source_local_time", "app_local_fold",
+                              "manual_override", "intake_index", "source_zone_label",
+                              "destination_utc_offset_seconds", "make", "model", "serial",
+                              "source_serial"}
+        if set(provenance) - allowed_provenance:
+            raise HTTPException(status_code=422, detail="Archive provenance has unsupported fields")
+        if any(not SHA256_RE.fullmatch(str(provenance.get(k, ""))) for k in ("source_sha256", "derivative_id")):
+            raise HTTPException(status_code=422, detail="Invalid source hash or derivative id")
+        for key in ("source_utc_offset_seconds", "destination_utc_offset_seconds", "clock_correction_seconds", "intake_index"):
+            value = provenance.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                      or abs(value) > MAX_TIME_OFFSET_SECONDS):
+                raise HTTPException(status_code=422, detail=f"Invalid archive provenance field: {key}")
+        for key, value in provenance.items():
+            if isinstance(value, str) and len(value) > (1024 if key in ("source_relative_path", "source_local_time") else 255):
+                raise HTTPException(status_code=422, detail=f"Archive provenance field is too long: {key}")
+        source_path = provenance.get("source_relative_path")
+        if (not isinstance(source_path, str) or not source_path or len(source_path) > 1024
+                or source_path.startswith("/") or "\\" in source_path or ".." in source_path.split("/")):
+            raise HTTPException(status_code=422, detail="Invalid archive source_relative_path")
+        if provenance.get("timestamp_basis") not in ("exif_datetime_original", "video_metadata", "manual_override"):
+            raise HTTPException(status_code=422, detail="Invalid timestamp basis")
+        manual = provenance.get("manual_override")
+        if manual is not None and (
+            not isinstance(manual, dict)
+            or set(manual) - {"reviewer", "reason", "prior_value"}
+            or not isinstance(manual.get("reviewer"), str) or len(manual["reviewer"]) > 128
+            or not isinstance(manual.get("reason"), str) or len(manual["reason"]) > 512
+        ):
+            raise HTTPException(status_code=422, detail="Invalid manual timestamp override provenance")
+        if provenance.get("clock_correction_status") not in ("verified", "unknown", "not_applicable") or not isinstance(provenance.get("capture_app_local"), str):
+            raise HTTPException(status_code=422, detail="Archive capture time is not resolved")
+        if (not isinstance(provenance.get("capture_precision_seconds"), (int, float))
+                or isinstance(provenance.get("capture_precision_seconds"), bool)
+                or not math.isfinite(provenance["capture_precision_seconds"])
+                or provenance["capture_precision_seconds"] < 0
+                or provenance["capture_precision_seconds"] > 86400):
+            raise HTTPException(status_code=422, detail="Invalid capture precision")
+        try:
+            local_time = datetime.fromisoformat(provenance["capture_app_local"])
+            capture_utc = datetime.fromisoformat(provenance["capture_utc"].replace("Z", "+00:00"))
+            fold = provenance.get("app_local_fold")
+            if fold not in (None, 0, 1):
+                raise ValueError("invalid fold")
+            candidates = _archive_local_utc_candidates(local_time, archive["app_timezone"])
+            if not candidates:
+                raise ValueError("nonexistent local wall time")
+            if len(candidates) == 2:
+                raise ValueError("ambiguous local wall time is not importable")
+            expected_utc = candidates.get(fold, candidates[0])
+            if capture_utc.tzinfo is None or expected_utc != capture_utc.astimezone(timezone.utc):
+                raise ValueError("UTC/local timestamp mismatch")
+            expected_offset_seconds = int(local_time.replace(
+                tzinfo=ZoneInfo(archive["app_timezone"]), fold=fold or 0
+            ).utcoffset().total_seconds())
+            destination_offset = provenance.get("destination_utc_offset_seconds")
+            if destination_offset is not None and destination_offset != expected_offset_seconds:
+                raise ValueError("destination timezone offset mismatch")
+        except ZoneInfoNotFoundError:
+            raise HTTPException(status_code=422, detail="Unknown archive app_timezone")
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Archive capture UTC and app-local timestamps do not agree: {exc}",
+            )
+        # Metadata keys that would assert application trust or bypass validation
+        # are never accepted from the client.
+        def reject_forged_keys(value):
+            if isinstance(value, dict):
+                if forbidden.intersection(value):
+                    raise HTTPException(status_code=422, detail="Archive file contains server-owned fields")
+                for nested in value.values():
+                    reject_forged_keys(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    reject_forged_keys(nested)
+        # Target identifiers are the one intentional occurrence of project/camera/deployment IDs.
+        reject_forged_keys({k: v for k, v in item.items() if k != "target"})
+    if indexes != set(range(total_files)):
+        raise HTTPException(status_code=422, detail="Archive file indexes must be contiguous")
+    return archive
 
 
 def _parse_staged_index(object_key: str) -> Optional[int]:
@@ -508,6 +785,13 @@ def _job_to_response(
         uuid=job.uuid,
         project_id=job.project_id,
         camera_id=job.camera_id,
+        deployment_id=getattr(job, "deployment_id", None),
+        client_batch_id=getattr(job, "client_batch_id", None),
+        archive_manifest=(
+            {key: value for key, value in job.archive_manifest.items() if key != "files"}
+            | {"file_count": len(job.archive_manifest.get("files", []))}
+            if getattr(job, "archive_manifest", None) else None
+        ),
         camera_name=camera_name,
         original_filename=job.original_filename,
         status=job.status,
@@ -533,6 +817,34 @@ def _job_to_response(
         created_at=job.created_at.isoformat() if job.created_at else "",
         created_by_email=created_by_email,
     )
+
+
+async def _response_with_live_counts(
+    db: AsyncSession, job: BulkUploadJob, camera_name: Optional[str], created_by_email: Optional[str],
+) -> BulkUploadJobResponse:
+    """Replayed idempotent responses carry the same current counts as polling."""
+    done = await _pipeline_done_counts(db, [job.id])
+    failed = await _pipeline_failed_counts(db, [job.id])
+    await _finalise_done_jobs(db, [job], done, failed)
+    await db.refresh(job)
+    return _job_to_response(
+        job, camera_name, created_by_email,
+        processed_files=done.get(job.id, 0),
+        pipeline_failed_files=failed.get(job.id, 0),
+    )
+
+
+@router.get("/archive-timezone")
+async def get_archive_timezone(
+    project_id: int,
+    user: User = Depends(require_project_admin_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Current app timezone and stable fingerprint required by archive intake."""
+    settings = (await db.execute(select(ServerSettings).limit(1))).scalar_one_or_none()
+    timezone_name = settings.timezone if settings and settings.timezone else "UTC"
+    return {"timezone": timezone_name,
+            "app_timezone_fingerprint": _archive_timezone_fingerprint(timezone_name)}
 
 
 @router.post("/scan-profile", response_model=ScanProfileResponse)
@@ -736,6 +1048,52 @@ async def create_bulk_upload_job(
     CreateBulkUploadRequest. Files are then uploaded one at a time to
     /jobs/{uuid}/files and finished with /jobs/{uuid}/finalize.
     """
+    archive = None
+    request_fingerprint = None
+    archive_camera = None
+    archive_deployment = None
+    if body.archive_manifest is not None:
+        if body.time_offset_seconds != 0:
+            raise HTTPException(status_code=422, detail="Archive intake requires time_offset_seconds=0")
+        archive = _validate_archive_manifest(
+            body.archive_manifest, project_id, body.camera_id, body.deployment_id, body.total_files
+        )
+        if sum(item["size_bytes"] for item in archive["files"]) != body.total_bytes:
+            raise HTTPException(status_code=422, detail="total_bytes does not match archive manifest sizes")
+        request_fingerprint = _archive_request_fingerprint(project_id, body, archive)
+        prior = (await db.execute(select(BulkUploadJob).where(
+            BulkUploadJob.project_id == project_id,
+            BulkUploadJob.client_batch_id == body.client_batch_id,
+        ))).scalar_one_or_none()
+        if prior:
+            _require_idempotent_payload(prior.request_fingerprint, request_fingerprint)
+            name = await db.scalar(select(Camera.device_id).where(Camera.id == prior.camera_id))
+            return await _response_with_live_counts(db, prior, name, user.email)
+
+        settings = (await db.execute(select(ServerSettings).limit(1))).scalar_one_or_none()
+        current_tz = settings.timezone if settings and settings.timezone else "UTC"
+        if archive["app_timezone"] != current_tz or archive["app_timezone_fingerprint"] != _archive_timezone_fingerprint(current_tz):
+            raise HTTPException(status_code=409, detail="Archive timezone settings are stale; rescan the current settings")
+        archive_camera = (await db.execute(select(Camera).where(
+            Camera.id == body.camera_id, Camera.project_id == project_id,
+        ))).scalar_one_or_none()
+        archive_deployment = (await db.execute(select(Deployment).join(
+            Site, Site.id == Deployment.site_id,
+        ).where(
+            Deployment.id == body.deployment_id, Deployment.camera_id == body.camera_id,
+            Site.project_id == project_id,
+        ))).scalar_one_or_none()
+        if archive_camera is None or archive_deployment is None:
+            raise HTTPException(status_code=400, detail="Archive target camera/deployment is not valid for this project")
+        for item in archive["files"]:
+            try:
+                capture = datetime.fromisoformat(item["provenance"]["capture_app_local"])
+                capture_day = capture.date()
+            except (TypeError, ValueError, KeyError):
+                raise HTTPException(status_code=422, detail="Invalid capture_app_local timestamp")
+            if capture_day < archive_deployment.start_date or (archive_deployment.end_date and capture_day > archive_deployment.end_date):
+                raise HTTPException(status_code=422, detail="Archive capture time falls outside the selected deployment")
+
     # Soft cap on in-flight jobs per project so one user cannot
     # starve the bulk worker queue with twenty parallel SD-card
     # uploads. Counts both 'uploading' (client streaming files) and
@@ -769,7 +1127,9 @@ async def create_bulk_upload_job(
     # or claim processing outcomes.
     for reserved in ("upload_ledger", "file_log", "process_summary"):
         manifest.pop(reserved, None)
-    if body.device_id:
+    if archive is not None:
+        camera = archive_camera
+    elif body.device_id:
         camera = await _get_or_create_camera_by_device_id(
             db, project_id, body.device_id
         )
@@ -794,12 +1154,20 @@ async def create_bulk_upload_job(
 
     job_uuid = str(uuid.uuid4())
     safe_folder_name = _safe_basename(body.folder_name) or "upload"
+    camera_name = camera.device_id
+    camera_id = camera.id
+    user_email = user.email
+    user_id = user.id
 
     job = BulkUploadJob(
         uuid=job_uuid,
         project_id=project_id,
-        created_by_user_id=user.id,
-        camera_id=camera.id,
+        created_by_user_id=user_id,
+        camera_id=camera_id,
+        deployment_id=body.deployment_id if archive is not None else None,
+        client_batch_id=body.client_batch_id,
+        request_fingerprint=request_fingerprint,
+        archive_manifest=archive,
         original_filename=safe_folder_name,
         staged_object_key=_staging_prefix(project_id, job_uuid),
         status="uploading",
@@ -808,23 +1176,37 @@ async def create_bulk_upload_job(
         time_offset_seconds=body.time_offset_seconds,
     )
     db.add(job)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        if body.client_batch_id is None:
+            raise
+        await db.rollback()
+        winner = (await db.execute(select(BulkUploadJob).where(
+            BulkUploadJob.project_id == project_id,
+            BulkUploadJob.client_batch_id == body.client_batch_id,
+        ))).scalar_one_or_none()
+        if winner is None:
+            raise HTTPException(status_code=409, detail="client_batch_id was concurrently used for a different request")
+        _require_idempotent_payload(winner.request_fingerprint, request_fingerprint)
+        return await _response_with_live_counts(db, winner, camera_name, user_email)
     await db.refresh(job)
 
     logger.info(
         "Created bulk upload job",
         job_uuid=job_uuid,
         project_id=project_id,
-        camera_id=camera.id,
+        camera_id=camera_id,
+        deployment_id=body.deployment_id if archive is not None else None,
         total_files=body.total_files,
         time_offset_seconds=body.time_offset_seconds,
-        user_id=user.id,
+        user_id=user_id,
     )
 
     return _job_to_response(
         job,
-        camera_name=camera.device_id,
-        created_by_email=user.email,
+        camera_name=camera_name,
+        created_by_email=user_email,
         processed_files=0,
     )
 
@@ -909,6 +1291,10 @@ async def _upload_bulk_file_inner(
     safe_name = _safe_basename(file.filename)
     object_key = f"{_staging_prefix(project_id, job_uuid)}{index:06d}_{safe_name}"
     checksum = hashlib.sha256(body).hexdigest()
+    if job.archive_manifest is not None:
+        archived = next((entry for entry in job.archive_manifest.get("files", []) if entry.get("index") == index), None)
+        if archived is None or not _archive_file_bytes_match(archived, body):
+            raise HTTPException(status_code=409, detail="Uploaded file does not match the immutable archive manifest")
     prior = ledger_from_manifest(job.manifest).get(str(index), {})
     if prior.get("accepted"):
         # The job row lock serializes retries across API processes. An index
@@ -1505,6 +1891,48 @@ async def retry_failed_bulk_images(
         "retried_files": len(retryable),
         "unretryable_files": len(failed_images) - len(retryable),
     }
+
+
+@router.get("/jobs/by-client-batch/{client_batch_id}", response_model=BulkUploadJobResponse)
+async def get_bulk_upload_job_by_client_batch(
+    project_id: int,
+    client_batch_id: str,
+    user: User = Depends(require_project_admin_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Authorized idempotency recovery lookup, scoped to the route project."""
+    job = (await db.execute(select(BulkUploadJob).where(
+        BulkUploadJob.project_id == project_id,
+        BulkUploadJob.client_batch_id == client_batch_id,
+    ))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Bulk upload job not found")
+    name = await db.scalar(select(Camera.device_id).where(Camera.id == job.camera_id)) if job.camera_id else None
+    return await _response_with_live_counts(db, job, name, user.email)
+
+
+@router.get("/jobs/{job_uuid}/receipts", response_model=BulkUploadReceiptsResponse)
+async def get_bulk_upload_receipts(
+    project_id: int,
+    job_uuid: str,
+    user: User = Depends(require_project_admin_access),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Per-index upload and processing receipt for archive/retry reconciliation."""
+    job = (await db.execute(select(BulkUploadJob).where(
+        BulkUploadJob.project_id == project_id,
+        BulkUploadJob.uuid == job_uuid,
+    ))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Bulk upload job not found")
+    rows = (await db.execute(select(
+        Image.uuid, Image.status, Image.pipeline_error,
+    ).where(Image.bulk_upload_job_id == job.id))).all()
+    states = {
+        row.uuid: {"pipeline_status": row.status, "pipeline_error": row.pipeline_error}
+        for row in rows
+    }
+    return BulkUploadReceiptsResponse(files=_bulk_receipt_rows(job, states))
 
 
 @router.get("/jobs/{job_uuid}", response_model=BulkUploadJobResponse)
