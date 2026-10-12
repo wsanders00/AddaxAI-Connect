@@ -1312,6 +1312,11 @@ def _process_job(job_uuid: str) -> None:
         manifest = job.manifest or {}
         time_offset_seconds = job.time_offset_seconds
         archive_manifest = job.archive_manifest
+        # get_db_session commits and expires these ORM objects on exit. Carry
+        # scalar target facts into the separate archive validation session.
+        project_id = job.project_id
+        archive_deployment_id = job.deployment_id
+        camera_project_id = camera.project_id
 
         # Mode A (no pinned site): run the camera-profile hunt per image and
         # resolve site + deployment from each image's GPS, exactly like FTPS.
@@ -1350,14 +1355,14 @@ def _process_job(job_uuid: str) -> None:
         try:
             with get_db_session() as session:
                 deployment = session.execute(select(Deployment).where(
-                    Deployment.id == job.deployment_id,
+                    Deployment.id == archive_deployment_id,
                     Deployment.camera_id == camera_id,
                 )).scalar_one_or_none()
                 target_site = session.get(Site, deployment.site_id) if deployment and deployment.site_id else None
                 settings = session.execute(select(ServerSettings).limit(1)).scalar_one_or_none()
                 current_timezone = settings.timezone if settings and settings.timezone else "UTC"
-                if (camera.project_id != job.project_id or deployment is None or target_site is None
-                        or target_site.project_id != job.project_id
+                if (camera_project_id != project_id or deployment is None or target_site is None
+                        or target_site.project_id != project_id
                         or archive_manifest.get("app_timezone") != current_timezone
                         or archive_manifest.get("app_timezone_fingerprint") != _archive_timezone_fingerprint(current_timezone)):
                     raise RuntimeError("Archive target or timezone settings changed before processing")

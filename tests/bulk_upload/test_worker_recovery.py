@@ -185,3 +185,86 @@ def test_lost_claim_is_checked_before_image_asset_upload(monkeypatch):
         raise AssertionError("image creation must require the active job claim")
 
     assert uploaded == []
+
+
+def test_archive_dispatch_survives_committed_session_expiration(monkeypatch):
+    """Simulate ORM expiry on commit; the isolated PostgreSQL proof covers the real session."""
+    from datetime import date
+    from sqlalchemy.orm.exc import DetachedInstanceError
+
+    class ExpiringRow:
+        def __init__(self, **values):
+            object.__setattr__(self, '_values', values)
+            object.__setattr__(self, '_expired', False)
+
+        def __getattr__(self, name):
+            if self._expired:
+                raise DetachedInstanceError('test row expired after its session committed')
+            return self._values[name]
+
+        def __setattr__(self, name, value):
+            self._values[name] = value
+
+    archive = {'app_timezone': 'UTC',
+               'app_timezone_fingerprint': bulk_worker._archive_timezone_fingerprint('UTC'),
+               'files': [{'provenance': {'capture_app_local': '2024-06-15T12:00:00'}}]}
+    job = ExpiringRow(id=9, camera_id=2, project_id=4, deployment_id=5,
+        staged_object_key='fixture/job/', manifest={}, time_offset_seconds=0,
+        archive_manifest=archive)
+    camera = ExpiringRow(id=2, project_id=4, uuid='camera-storage')
+    deployment = SimpleNamespace(id=5, site_id=6, start_date=date(2024, 6, 10),
+                                 end_date=date(2024, 6, 20))
+    site = SimpleNamespace(id=6, project_id=4)
+    settings = SimpleNamespace(timezone='UTC')
+
+    class FirstSession:
+        def execute(self, _statement):
+            return SimpleNamespace(scalar_one_or_none=lambda: job)
+
+        def get(self, _model, _identity):
+            return camera
+
+    class TargetSession:
+        count = 0
+
+        def execute(self, _statement, *_args):
+            self.count += 1
+            if self.count == 1:
+                return SimpleNamespace(scalar_one_or_none=lambda: deployment)
+            if self.count == 2:
+                return SimpleNamespace(scalar_one_or_none=lambda: settings)
+            return SimpleNamespace(fetchone=lambda: SimpleNamespace(lat=0.0, lon=0.0))
+
+        def get(self, _model, _identity):
+            return site
+
+    sessions = []
+
+    @contextmanager
+    def expiring_session():
+        first = not sessions
+        session = FirstSession() if first else TargetSession()
+        sessions.append(session)
+        try:
+            yield session
+        finally:
+            if first:
+                object.__setattr__(job, '_expired', True)
+                object.__setattr__(camera, '_expired', True)
+
+    processed, status = [], []
+    monkeypatch.setattr(bulk_worker, 'get_db_session', expiring_session)
+    monkeypatch.setattr(bulk_worker, '_claim_process_job', lambda _uuid: 'fixture-claim')
+    monkeypatch.setattr(bulk_worker, '_camera_storage_id', lambda row: row.uuid)
+    monkeypatch.setattr(bulk_worker, '_process_prefix_job', lambda *args, **kwargs: processed.append((args, kwargs)))
+    monkeypatch.setattr(bulk_worker, '_set_status', lambda *args, **kwargs: status.append(kwargs))
+
+    bulk_worker._process_job('fixture-job')
+
+    assert len(processed) == 1, status
+    args, kwargs = processed[0]
+    assert args[1:4] == (9, 2, 'camera-storage')
+    assert args[6] == 5
+    assert kwargs['claim_id'] == 'fixture-claim'
+    assert status == [{'claim_id': 'fixture-claim', 'staging_complete': True,
+                       'pipeline_claim_id': None, 'pipeline_error': None}]
