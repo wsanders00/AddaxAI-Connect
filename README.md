@@ -61,6 +61,13 @@ Our branch policy is:
 
 Our installation uses rootless Podman and separates the web application, database and queues from GPU processing and S3-compatible media storage. Host configuration and operational runbooks are maintained separately. The public deployment documentation describes upstream defaults.
 
+This repository owns application code, maintained changes, tests, and releases.
+The service-island infrastructure project owns deployment, networking, storage,
+workers, recovery, and the operated import service. Wildlife research is a
+consumer of that service: collection choices, camera-placement evidence, media
+acceptance, and research conclusions belong to the research project. Backlog
+ingestion is a bounded delivery task within that continuing relationship.
+
 Keep contributions here generic: application code, tests and documentation. Credentials, private endpoints, host inventories, camera locations, original media, database copies and raw operational logs stay outside this public repository. Upstream updates are reviewed and validated on `development` before deployment; updating `main` does not deploy them.
 
 ## Demo
