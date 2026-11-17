@@ -13,6 +13,32 @@ from config import get_settings
 logger = get_logger("classification-speciesnet.classifier")
 settings = get_settings()
 
+_US_ADMIN1_CODES = frozenset({
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA",
+    "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY",
+    "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX",
+    "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+})
+
+
+def _normalize_geolocation(
+    country_code: str, admin1_region: str = ""
+) -> tuple[str, str]:
+    """Adapt Connect geolocation values to SpeciesNet's ensemble input contract."""
+    country = country_code.strip().upper()
+    region = admin1_region.strip().upper()
+    if len(country) != 3 or not country.isalpha():
+        raise ValueError("SpeciesNet country code must be ISO 3166-1 alpha-3")
+
+    if country == "USA" and region:
+        if region.startswith("US-"):
+            region = region[3:]
+        if not region or region not in _US_ADMIN1_CODES:
+            raise ValueError(f"Invalid US admin1 region: {admin1_region!r}")
+
+    return country, region
+
 
 class DetectionInfo:
     """Detection information for classification"""
@@ -112,6 +138,7 @@ def _apply_ensemble(
 
     classifier_results = {image_path: classifier_result}
 
+    country_code, admin1_region = _normalize_geolocation(country_code, admin1_region)
     geolocation_results = {
         image_path: {
             "country": country_code,

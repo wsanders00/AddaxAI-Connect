@@ -9,6 +9,7 @@ from typing import List
 from shared.database import get_db_session
 from shared.models import Image, Detection, Classification as ClassificationModel, Camera, Project, TaxonomyMapping, ServerSettings
 from shared.logger import get_logger
+from shared.pipeline_recovery import set_pipeline_status
 from classifier import Classification, DetectionInfo
 
 logger = get_logger("classification-speciesnet.db_operations")
@@ -72,7 +73,7 @@ def get_detections_for_image(image_uuid: str) -> tuple[int, int, int, List[Detec
     try:
         with get_db_session() as db:
             # Get image record
-            image = db.query(Image).filter(Image.uuid == image_uuid).first()
+            image = db.query(Image).filter(Image.uuid == image_uuid).with_for_update().first()
 
             if not image:
                 raise ValueError(f"Image not found: {image_uuid}")
@@ -136,7 +137,9 @@ def get_detections_for_image(image_uuid: str) -> tuple[int, int, int, List[Detec
         raise
 
 
-def insert_classifications(classifications: List[Classification]) -> List[int]:
+def insert_classifications(
+    classifications: List[Classification], image_uuid: str, claim_id: str
+) -> List[int]:
     """
     Insert classification records into database.
 
@@ -162,9 +165,21 @@ def insert_classifications(classifications: List[Classification]) -> List[int]:
 
     try:
         with get_db_session() as db:
+            image = db.query(Image).filter(Image.uuid == image_uuid).with_for_update().first()
+            if not image or image.pipeline_claim_id != claim_id or image.status != "classifying":
+                raise RuntimeError("Classification claim was lost before database write")
             classification_ids = []
+            detection_ids = {item.detection_id for item in classifications}
+            existing = {
+                row[0] for row in db.query(ClassificationModel.detection_id)
+                .filter(ClassificationModel.detection_id.in_(detection_ids)).all()
+            } if detection_ids else set()
 
             for classification in classifications:
+                # Delivery may repeat after a prior DB commit. Keep the
+                # durable classification and any manual verification intact.
+                if classification.detection_id in existing:
+                    continue
                 classification_record = ClassificationModel(
                     detection_id=classification.detection_id,
                     species=classification.species,
@@ -181,6 +196,7 @@ def insert_classifications(classifications: List[Classification]) -> List[int]:
                 db.flush()  # Get ID without committing
 
                 classification_ids.append(classification_record.id)
+                existing.add(classification.detection_id)
 
             db.commit()
 
@@ -200,7 +216,7 @@ def insert_classifications(classifications: List[Classification]) -> List[int]:
         raise
 
 
-def update_image_status(image_uuid: str, status: str) -> None:
+def update_image_status(image_uuid: str, status: str, claim_id: str) -> None:
     """
     Update image processing status.
 
@@ -214,16 +230,8 @@ def update_image_status(image_uuid: str, status: str) -> None:
     logger.info("Updating image status", image_uuid=image_uuid, status=status)
 
     try:
-        with get_db_session() as db:
-            image = db.query(Image).filter(Image.uuid == image_uuid).first()
-
-            if not image:
-                raise ValueError(f"Image not found: {image_uuid}")
-
-            image.status = status
-            db.commit()
-
-            logger.info("Image status updated", image_uuid=image_uuid, status=status)
+        set_pipeline_status(image_uuid, status, claim_id=claim_id)
+        logger.info("Image status updated", image_uuid=image_uuid, status=status)
 
     except Exception as e:
         logger.error(

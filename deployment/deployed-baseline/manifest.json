@@ -1,0 +1,1718 @@
+{
+  "build_profiles": {
+    "bulk-upload": "deployment/deployed-baseline/bulk-upload.Containerfile",
+    "classification-speciesnet": "deployment/deployed-baseline/classification-speciesnet.Containerfile",
+    "detection": "deployment/deployed-baseline/detection.Containerfile"
+  },
+  "components": {
+    "addax-pilot-api": {
+      "files": {
+        "/app/Dockerfile": {
+          "sha256": "c8410dcd7635686258196b15d4375f8c9617dc058bbd316ab0a955390fe10350",
+          "source": "services/api/Dockerfile"
+        },
+        "/app/VERSION": {
+          "sha256": "635d5dd5a4ace7759d038fa90fa3a831eedc8ca045806ac12d1043225f5ad7f2",
+          "source": "VERSION"
+        },
+        "/app/alembic.ini": {
+          "sha256": "5dac058d5877146140a42bfec8c58c6a0f501ffec3baf394f4fea0f0b6fa2cd9",
+          "source": "services/api/alembic.ini"
+        },
+        "/app/alembic/env.py": {
+          "sha256": "f58a4cf2ce6f255d8e80be529bf284c26fd7ab01b1e848e9da8b326b9a23b5d0",
+          "source": "services/api/alembic/env.py"
+        },
+        "/app/alembic/versions/20250114_add_project_and_role_to_invitations.py": {
+          "sha256": "3ad15aa001534d1838a7d2a9ede7dc9e8d9be7480b8f4c1d4853e87aa7ab746d",
+          "source": "services/api/alembic/versions/20250114_add_project_and_role_to_invitations.py"
+        },
+        "/app/alembic/versions/20250114_add_user_invitations.py": {
+          "sha256": "927c481c1099ca48dd53cd872dfa6854a3dae572be114d1452e95c7ac7fa6116",
+          "source": "services/api/alembic/versions/20250114_add_user_invitations.py"
+        },
+        "/app/alembic/versions/20250114_initial_schema.py": {
+          "sha256": "42272e23cf3a51705524797e388cf6108ad22d29c32b4f89572f1c078d14291c",
+          "source": "services/api/alembic/versions/20250114_initial_schema.py"
+        },
+        "/app/alembic/versions/20250114_rename_is_server_admin.py": {
+          "sha256": "ed09046ee52bae19ce436bef4ec8f3848a460d6927401ad26da2bc2f9ca21a7b",
+          "source": "services/api/alembic/versions/20250114_rename_is_server_admin.py"
+        },
+        "/app/alembic/versions/20250115_add_sim_fields_to_cameras.py": {
+          "sha256": "661ec6ab621bf5cf754ab466274b9edaba5bd893595937c4095e4958e9076f42",
+          "source": "services/api/alembic/versions/20250115_add_sim_fields_to_cameras.py"
+        },
+        "/app/alembic/versions/20250124_add_invitation_tokens.py": {
+          "sha256": "86516abe74d036f59cac7654161232faf9f439931b579cb5e9deac5e2447dfd9",
+          "source": "services/api/alembic/versions/20250124_add_invitation_tokens.py"
+        },
+        "/app/alembic/versions/20250125_drop_email_allowlist.py": {
+          "sha256": "d48985ab8d1d97d73e590bb3828f8147fc0dd332bc5fdc8a724ed4c0b61f7eec",
+          "source": "services/api/alembic/versions/20250125_drop_email_allowlist.py"
+        },
+        "/app/alembic/versions/20250127_add_detection_threshold.py": {
+          "sha256": "546f3ca3e047687d872ca0ee548313a649d2a65f3a76816c6090e3a81939a571",
+          "source": "services/api/alembic/versions/20250127_add_detection_threshold.py"
+        },
+        "/app/alembic/versions/20260129_add_deployment_periods.py": {
+          "sha256": "44a6f0cefb34d1680a92e69d8436893e38e6f1a4b9642a49217e739285b1aef7",
+          "source": "services/api/alembic/versions/20260129_add_deployment_periods.py"
+        },
+        "/app/alembic/versions/20260202_add_camera_health_reports.py": {
+          "sha256": "79e5fe3d09590ca47ee06bbbd177c3e609d16a77f810e4a392df515783e5f007",
+          "source": "services/api/alembic/versions/20260202_add_camera_health_reports.py"
+        },
+        "/app/alembic/versions/20260202_add_report_email.py": {
+          "sha256": "68c85f792a5e1ace23dc3fb39081d5573bfd8f2b25cca9111aae90bd73262bf4",
+          "source": "services/api/alembic/versions/20260202_add_report_email.py"
+        },
+        "/app/alembic/versions/20260204_add_human_verification.py": {
+          "sha256": "e51bc19a743631d1f7452aad0b147c3c81ce4b4d5b9196c5a4e6557d4b7464f2",
+          "source": "services/api/alembic/versions/20260204_add_human_verification.py"
+        },
+        "/app/alembic/versions/20260206_add_species_taxonomy.py": {
+          "sha256": "48d89e7c1942df5184e964bdb8032812e8d97e97b071640b80c11f18ef3ac4c1",
+          "source": "services/api/alembic/versions/20260206_add_species_taxonomy.py"
+        },
+        "/app/alembic/versions/20260213_add_project_timezone.py": {
+          "sha256": "efb23b97b85895a53cea86ad44ba7da4b4836284ac38af44704bc3f51cb3467d",
+          "source": "services/api/alembic/versions/20260213_add_project_timezone.py"
+        },
+        "/app/alembic/versions/20260214_add_blur_people_vehicles.py": {
+          "sha256": "0aeb0b18bb4b6aaf04323f17a69f1ba23fcdfc99efdab8d9a1cb5155fbecabfc",
+          "source": "services/api/alembic/versions/20260214_add_blur_people_vehicles.py"
+        },
+        "/app/alembic/versions/20260214_add_independence_interval.py": {
+          "sha256": "12eb27b19063817c9d92af10c91c03d3aeb1a4db2736a3db9eba1ba60e89ef66",
+          "source": "services/api/alembic/versions/20260214_add_independence_interval.py"
+        },
+        "/app/alembic/versions/20260214_move_timezone_to_server_settings.py": {
+          "sha256": "66bac6a17273de355a7b05d9be2156408cbf53127b38fae224a3e80fe2350192",
+          "source": "services/api/alembic/versions/20260214_move_timezone_to_server_settings.py"
+        },
+        "/app/alembic/versions/20260217_add_project_documents.py": {
+          "sha256": "c02d8c7147fe3727c2e59c35ae9fb24e9fbbefd86393ed7916ad0a32efe5c6fa",
+          "source": "services/api/alembic/versions/20260217_add_project_documents.py"
+        },
+        "/app/alembic/versions/20260217_migrate_camera_metadata.py": {
+          "sha256": "213ebed099ed622597bc9e5af29b075f3b3d91d8fcb1a77fab4545c9e1c30625",
+          "source": "services/api/alembic/versions/20260217_migrate_camera_metadata.py"
+        },
+        "/app/alembic/versions/20260306_add_camera_groups.py": {
+          "sha256": "f00362c99d66b2726f70aee03bd0bb3a752237000d3257071913ea27b0b158c6",
+          "source": "services/api/alembic/versions/20260306_add_camera_groups.py"
+        },
+        "/app/alembic/versions/20260309_add_image_is_hidden.py": {
+          "sha256": "f5af7a85052b9601e8d34f02ce0e5f98c239fa884bdaf0ea0fbcbc3e42abfba8",
+          "source": "services/api/alembic/versions/20260309_add_image_is_hidden.py"
+        },
+        "/app/alembic/versions/20260309_rename_imei_to_device_id.py": {
+          "sha256": "7f7cc305b0e38c12a70b590e3c94af543f3763514ff66db270b324cd7623a80f",
+          "source": "services/api/alembic/versions/20260309_rename_imei_to_device_id.py"
+        },
+        "/app/alembic/versions/20260312_add_raw_prediction_to_classifications.py": {
+          "sha256": "6837a82d9bb2b1afe8671ac2d58285695915389eaac77b7b5fc3524e7e4d6184",
+          "source": "services/api/alembic/versions/20260312_add_raw_prediction_to_classifications.py"
+        },
+        "/app/alembic/versions/20260314_add_taxonomy_mapping.py": {
+          "sha256": "3a887e6b66a62f10fbde3605dbcd7512f6057d8101764b4b21134c40398f77d0",
+          "source": "services/api/alembic/versions/20260314_add_taxonomy_mapping.py"
+        },
+        "/app/alembic/versions/20260316_add_geofencing_to_server_settings.py": {
+          "sha256": "fc6f3222ddb68ecbf5931eefdd76590f66bc87e3b7ce665d081087903817046b",
+          "source": "services/api/alembic/versions/20260316_add_geofencing_to_server_settings.py"
+        },
+        "/app/alembic/versions/20260319_drop_report_email.py": {
+          "sha256": "bcd208f8f32b87a0fac597ecadd6ac202d4de6302953e23d4e07f4edaaef1d28",
+          "source": "services/api/alembic/versions/20260319_drop_report_email.py"
+        },
+        "/app/alembic/versions/20260409_add_classification_thresholds.py": {
+          "sha256": "f57d434bbc5cdea435ce5110c9157f6575229ba9a8f0ff3962b50a8da0801c12",
+          "source": "services/api/alembic/versions/20260409_add_classification_thresholds.py"
+        },
+        "/app/alembic/versions/20260410_add_behavior.py": {
+          "sha256": "60428a6013a67a00a0948a20058979161fb3ac32ace57200133ef79790be572b",
+          "source": "services/api/alembic/versions/20260410_add_behavior.py"
+        },
+        "/app/alembic/versions/20260410_add_sex_and_life_stage.py": {
+          "sha256": "11990e4701f185e61d83eb652bca594f14c0e5cf671237396c997cde04d8b149",
+          "source": "services/api/alembic/versions/20260410_add_sex_and_life_stage.py"
+        },
+        "/app/alembic/versions/20260413_add_image_like.py": {
+          "sha256": "06f92197123b13426da78940314594cee1d9d96a0f34980f43f4536ea7179456",
+          "source": "services/api/alembic/versions/20260413_add_image_like.py"
+        },
+        "/app/alembic/versions/20260413_add_image_needs_review.py": {
+          "sha256": "bb166823c59ffa7c981fd563988dd2490b582b9fb1cf640308085f703b63f8b6",
+          "source": "services/api/alembic/versions/20260413_add_image_needs_review.py"
+        },
+        "/app/alembic/versions/20260414_add_camera_ref_image.py": {
+          "sha256": "c78f806bd3f78c51a339d87ae56f40ed2d161978685068385ef07f11cf6cd183",
+          "source": "services/api/alembic/versions/20260414_add_camera_ref_image.py"
+        },
+        "/app/alembic/versions/20260414_captured_at_naive_local.py": {
+          "sha256": "6420d780e071b2d1f1f255d26e6206043a84c518051197c3c4144d7c4aae381c",
+          "source": "services/api/alembic/versions/20260414_captured_at_naive_local.py"
+        },
+        "/app/alembic/versions/20260421_infra_alert_toggles.py": {
+          "sha256": "2243ef8d16ae8ae76b98ab0f87b1ccc58e709a542606e5be762122bfb59cf7e7",
+          "source": "services/api/alembic/versions/20260421_infra_alert_toggles.py"
+        },
+        "/app/alembic/versions/20260507_add_camera_sim_expiry_date.py": {
+          "sha256": "b3bf08fbe572b28b2c124b7e2d9e6c73621099d81f8579cd22e6a632a4336103",
+          "source": "services/api/alembic/versions/20260507_add_camera_sim_expiry_date.py"
+        },
+        "/app/alembic/versions/20260508_add_password_changed_at.py": {
+          "sha256": "c81de02a3f271b3b9534f00de40f08de2a20b1fc110f9f66a04a390130646c2c",
+          "source": "services/api/alembic/versions/20260508_add_password_changed_at.py"
+        },
+        "/app/alembic/versions/20260508_add_project_reminders.py": {
+          "sha256": "86bed14ed90230ca34aaae46591a55e40f4eb0f0d06e4f6f624a9ec96a279213",
+          "source": "services/api/alembic/versions/20260508_add_project_reminders.py"
+        },
+        "/app/alembic/versions/20260511_idx_img_cam_captured.py": {
+          "sha256": "e0d3d798382c8800ddc001916fd35b30653c3c78da6ea325423cef001cbf9253",
+          "source": "services/api/alembic/versions/20260511_idx_img_cam_captured.py"
+        },
+        "/app/alembic/versions/20260516_bulk_upload.py": {
+          "sha256": "767403068451d3b80b366c568a3ae5836f83b61c2483ad469b74d63e2017411b",
+          "source": "services/api/alembic/versions/20260516_bulk_upload.py"
+        },
+        "/app/alembic/versions/20260516_bulk_upload_manifest.py": {
+          "sha256": "9cccbd3621df65464765bfd1698d8913a8e54e3cf63bbe7383ca79f0908c2385",
+          "source": "services/api/alembic/versions/20260516_bulk_upload_manifest.py"
+        },
+        "/app/alembic/versions/20260516_image_bulk_job_fk.py": {
+          "sha256": "60380182e6f2bda89bbe6c22bcdad899e81111b0c3e420f3f9f627fd7fcb419c",
+          "source": "services/api/alembic/versions/20260516_image_bulk_job_fk.py"
+        },
+        "/app/alembic/versions/20260516_widen_bulk_status.py": {
+          "sha256": "d8fbb668abfba76b66d99c1d526cbac1d9538aa51813cdecc365472a806101c3",
+          "source": "services/api/alembic/versions/20260516_widen_bulk_status.py"
+        },
+        "/app/alembic/versions/20260517_bulk_process_started.py": {
+          "sha256": "4ea4fee14355630ebfca873af79eab1a11106779f7818fd505b85f55c4a35fac",
+          "source": "services/api/alembic/versions/20260517_bulk_process_started.py"
+        },
+        "/app/alembic/versions/20260518_bulk_jobs_idx.py": {
+          "sha256": "cb63e027e4289f95696066d8193405f98bb785b9f1acaa472d3e1461f3224488",
+          "source": "services/api/alembic/versions/20260518_bulk_jobs_idx.py"
+        },
+        "/app/alembic/versions/20260520_add_sites.py": {
+          "sha256": "6d763b0bc42b7b5e72d42c98044f6d54593d3543c331d8ac04900129c86df40d",
+          "source": "services/api/alembic/versions/20260520_add_sites.py"
+        },
+        "/app/alembic/versions/20260521_add_deployment_notes.py": {
+          "sha256": "cf4d4b850c2168ee02a61d1c676b07b1c32a5dfb4e27a6b4a23e16a94ecba755",
+          "source": "services/api/alembic/versions/20260521_add_deployment_notes.py"
+        },
+        "/app/alembic/versions/20260521_drop_camera_location.py": {
+          "sha256": "0c55dddc27ce2574bfc4facd871b70cabeebf3eecd1015ddc6a8b2988e31b4cf",
+          "source": "services/api/alembic/versions/20260521_drop_camera_location.py"
+        },
+        "/app/alembic/versions/20260521_drop_camera_name.py": {
+          "sha256": "fb6f5a10640a70ad04d918c4b8640fdd525bfd9e6fdc853e418edfab5fed8716",
+          "source": "services/api/alembic/versions/20260521_drop_camera_name.py"
+        },
+        "/app/alembic/versions/20260528_dep_site_source.py": {
+          "sha256": "f66d17d31a09d78ea8bc78518d06fd259ef80db841ed3f6ba83b99a027f375ec",
+          "source": "services/api/alembic/versions/20260528_dep_site_source.py"
+        },
+        "/app/alembic/versions/20260601_drop_dep_meta.py": {
+          "sha256": "ce721507ebfb97078f1510edbefa7db5317eff30eb83c659102d33eef285ca4e",
+          "source": "services/api/alembic/versions/20260601_drop_dep_meta.py"
+        },
+        "/app/alembic/versions/20260609_readd_dep_label.py": {
+          "sha256": "951792e7c0e194884858d05cb33a0a029547cf25f01f32f8f730b8f905c912f1",
+          "source": "services/api/alembic/versions/20260609_readd_dep_label.py"
+        },
+        "/app/alembic/versions/20260616_rejections_feed.py": {
+          "sha256": "be66aa9c09efa9ad8d574b2d08a8ea97a8adc051669b8d8130b7379ecf782288",
+          "source": "services/api/alembic/versions/20260616_rejections_feed.py"
+        },
+        "/app/alembic/versions/20260703_camera_updates_feed.py": {
+          "sha256": "811effeb077dc1f909f84d4ab214c756229b5f64bab9eb4611382c9fd7f25e6e",
+          "source": "services/api/alembic/versions/20260703_camera_updates_feed.py"
+        },
+        "/app/alembic/versions/20260703_dep_running_mean_pin.py": {
+          "sha256": "db424616e01a55629c055f39f794d9d067baa2d85406110082daf8edc788d9c5",
+          "source": "services/api/alembic/versions/20260703_dep_running_mean_pin.py"
+        },
+        "/app/alembic/versions/20260703_drop_dep_label.py": {
+          "sha256": "51eb54602c571b3c92ba073fb7962dc08e420c640cccf157f43621078d415e03",
+          "source": "services/api/alembic/versions/20260703_drop_dep_label.py"
+        },
+        "/app/alembic/versions/20260703_feed_original_name.py": {
+          "sha256": "f1d13fe1a3994d48875b5b316c34ef793d1cd42651f8fb70285fe8c1386d99e5",
+          "source": "services/api/alembic/versions/20260703_feed_original_name.py"
+        },
+        "/app/alembic/versions/20260703_feed_site_created.py": {
+          "sha256": "0f7e4c4682cd511d36333fa69a6c24b2a5c51ef2101640a0569963b002e09a49",
+          "source": "services/api/alembic/versions/20260703_feed_site_created.py"
+        },
+        "/app/alembic/versions/20260706_notify_sites.py": {
+          "sha256": "f7f7dc6e29da24864f4caff7217071bdc5a5d0faa767f75f259f8ff27f8f0c66",
+          "source": "services/api/alembic/versions/20260706_notify_sites.py"
+        },
+        "/app/alembic/versions/20260706_site_groups.py": {
+          "sha256": "47a2ca29ecb60c8cc91672ed693244c767a594a564a23ffdac1a621256b7fac9",
+          "source": "services/api/alembic/versions/20260706_site_groups.py"
+        },
+        "/app/alembic/versions/20260807_add_image_tags.py": {
+          "sha256": "bff9b39a19f5ccc298a04a897b41c9a2279285e0e97b6a17e41981ee785dc263",
+          "source": "services/api/alembic/versions/20260807_add_image_tags.py"
+        },
+        "/app/alembic/versions/20260807_camera_alert_rules.py": {
+          "sha256": "e6ed0659a7a62909ab676cbc210090d290dcd2bba60b86e51ea8d2338b2c7aa0",
+          "source": "services/api/alembic/versions/20260807_camera_alert_rules.py"
+        },
+        "/app/alembic/versions/20260807_split_blur_settings.py": {
+          "sha256": "d76749d06cbb727ff2f047a8e4bdb34a70f21c81bc09a39e3949f4cc6957f35f",
+          "source": "services/api/alembic/versions/20260807_split_blur_settings.py"
+        },
+        "/app/alembic/versions/20260809_detection_alert_rules.py": {
+          "sha256": "4dfa6132182f089121b32fc1c6deda40730cebd9441030ca356753ac33378a42",
+          "source": "services/api/alembic/versions/20260809_detection_alert_rules.py"
+        },
+        "/app/alembic/versions/20260810_camera_maintenance.py": {
+          "sha256": "ff6edfcf6c746b3238e02ac94df9f44cbb63a06f3498afb53bb1656abd9c0d6b",
+          "source": "services/api/alembic/versions/20260810_camera_maintenance.py"
+        },
+        "/app/alembic/versions/20260810_membership_site_scope.py": {
+          "sha256": "f4096bfdb017973d09e62f6163a5d3a00017ab04b5c2c68556540a75738df72b",
+          "source": "services/api/alembic/versions/20260810_membership_site_scope.py"
+        },
+        "/app/alembic/versions/20260811_scheduled_report_rules.py": {
+          "sha256": "63aa940d9bee0f9fb9f1ab114b2b41766b8d805a34a34dd67378310aec429577",
+          "source": "services/api/alembic/versions/20260811_scheduled_report_rules.py"
+        },
+        "/app/alembic/versions/20260812_theft_watch_rules.py": {
+          "sha256": "a42e4f888e2d8b4314665b26fc2e58f9df54490e3ed9cb666e46ca2d7c00def6",
+          "source": "services/api/alembic/versions/20260812_theft_watch_rules.py"
+        },
+        "/app/alembic/versions/20260818_security_alert_toggle.py": {
+          "sha256": "1a9631ecd4869332f32ba795ea2f8149bcf3f13be9f9c91c2d6e3c63338db9e9",
+          "source": "services/api/alembic/versions/20260818_security_alert_toggle.py"
+        },
+        "/app/alembic/versions/20260827_rejection_source_path.py": {
+          "sha256": "cb0a7e5d0f112adbf351edf19cae0fddd9b790edebb65a4f30f335c45a84c146",
+          "source": "services/api/alembic/versions/20260827_rejection_source_path.py"
+        },
+        "/app/alembic/versions/20260828_drop_feed_seen.py": {
+          "sha256": "49670d1b8c8ab4581a650d4534b54dd221f31d37e42b294813848e24b6904b45",
+          "source": "services/api/alembic/versions/20260828_drop_feed_seen.py"
+        },
+        "/app/alembic/versions/20260829_project_integrations.py": {
+          "sha256": "3de5d5038e252954f5a82cbfd2c942ad4be42aaad3df64154303220e2ba3e9ae",
+          "source": "services/api/alembic/versions/20260829_project_integrations.py"
+        },
+        "/app/alembic/versions/20260911_species_nullable.py": {
+          "sha256": "6ddce944965c2ff83508da9398935103f7e0c7770068c5291958afbaa5b5c2e3",
+          "source": "services/api/alembic/versions/20260911_species_nullable.py"
+        },
+        "/app/alembic/versions/20261007_bulk_time_offset.py": {
+          "sha256": "6556525b52e4971be22fab39fef786b6454beffd8566e74b15955080b71ff5c2",
+          "source": "services/api/alembic/versions/20261007_bulk_time_offset.py"
+        },
+        "/app/alembic/versions/20261009_camera_service_tasks.py": {
+          "sha256": "6d3b6dc6cb9d413bfabf5821a1032645b6d86fb712c46d66caa75b3dc26c5db5",
+          "source": "services/api/alembic/versions/20261009_camera_service_tasks.py"
+        },
+        "/app/alembic/versions/20261010_pipeline_recovery.py": {
+          "sha256": "9f05d17fb5e0f8e7c88db395233cfde86806624530be926fc0ebd32b26734c1d",
+          "source": "services/api/alembic/versions/20261010_pipeline_recovery.py"
+        },
+        "/app/alembic/versions/20261011_archive_intake.py": {
+          "sha256": "03845c593cd2881cd18c89fbf681ac04602aecc82d2df71001391cc66f97ad0f",
+          "source": "services/api/alembic/versions/20261011_archive_intake.py"
+        },
+        "/app/alembic/versions/20261012_privacy_removal.py": {
+          "sha256": "fbdf80cc5f06ff6fe6258d8d4b7e7b404d0b462e907177443b5c47c115788792",
+          "source": "services/api/alembic/versions/20261012_privacy_removal.py"
+        },
+        "/app/alembic/versions/20261013_camera_retired_at.py": {
+          "sha256": "afdcace9961a92074e1a01b05d5cb601444ae729bad5c531cac0bccc5f3cdab1",
+          "source": "services/api/alembic/versions/20261013_camera_retired_at.py"
+        },
+        "/app/alembic/versions/20261014_preserve_archive_merge.py": {
+          "sha256": "b172b3f0da67257dfeb421d9705679aca7a00652c1ae51fce66f4365070b520e",
+          "source": "services/api/alembic/versions/20261014_preserve_archive_merge.py"
+        },
+        "/app/alembic/versions/__init__.py": {
+          "sha256": "7a746c40581f7015cda744401be2877b4ef816d9028befea8ed1f50a9195b250",
+          "source": "services/api/alembic/versions/__init__.py"
+        },
+        "/app/auth/__init__.py": {
+          "sha256": "63117b015c3cfe478e1a35475d23fc58067ba82aeef31fb99cf6124693ddd1db",
+          "source": "services/api/auth/__init__.py"
+        },
+        "/app/auth/permissions.py": {
+          "sha256": "fca0222460d8a4627fc8aa4cec6f8baa985311abe3905e4c912b27d9b67fd121",
+          "source": "services/api/auth/permissions.py"
+        },
+        "/app/auth/project_access.py": {
+          "sha256": "a70c51c7ac2d2f1754563db669a912c55ff2e88cf519097713fe83ed4aaeff87",
+          "source": "services/api/auth/project_access.py"
+        },
+        "/app/auth/rate_limit.py": {
+          "sha256": "c7cd87d61473a26a71b003a8f61601d1e3882c389f4dfce1cff728dc6a5ee950",
+          "source": "services/api/auth/rate_limit.py"
+        },
+        "/app/auth/routes.py": {
+          "sha256": "8b88bf3d08e941c3639fd01f7f11ab80a751480095d83d04cbef2918c66457de",
+          "source": "services/api/auth/routes.py"
+        },
+        "/app/auth/schemas.py": {
+          "sha256": "3374fc238c588c147ddf8ca7db8cf80847a96d6e4f60620f3d051ba16e353703",
+          "source": "services/api/auth/schemas.py"
+        },
+        "/app/auth/user_manager.py": {
+          "sha256": "309ab2e73ac04d0054008a80c7949b54f2ef612b02bb99f07e77b520a9dcb5de",
+          "source": "services/api/auth/user_manager.py"
+        },
+        "/app/auth/users.py": {
+          "sha256": "10d8f1fbde092df43375d5b4d66d7658034dbae4b82661963e2180e192b94f7c",
+          "source": "services/api/auth/users.py"
+        },
+        "/app/mailer/__init__.py": {
+          "sha256": "8610098d9360dfa3e99bfe3131ba5d93d70b5dd84614a5abce58f806bc13a9d4",
+          "source": "services/api/mailer/__init__.py"
+        },
+        "/app/mailer/sender.py": {
+          "sha256": "48d5456d33be3d13262b5fd3e4719a2257c195b98d0588d9759e78da4bf1a1d1",
+          "source": "services/api/mailer/sender.py"
+        },
+        "/app/main.py": {
+          "sha256": "d57a31ce051fcbcefb93e540df099721defe9128a1be3b7e9b17a82d84633686",
+          "source": "services/api/main.py"
+        },
+        "/app/middleware/__init__.py": {
+          "sha256": "bdeb0da84af795ea1e086c288b58e1261c7ff293a1ba1e629ddfb0b2fd682e3f",
+          "source": "services/api/middleware/__init__.py"
+        },
+        "/app/middleware/logging.py": {
+          "sha256": "01ba353a4ccd91946269ce2321c8c155ca48555ba005f135e1dd8df94b1d177e",
+          "source": "services/api/middleware/logging.py"
+        },
+        "/app/migrate.sh": {
+          "sha256": "f23145587f1fb0e97ea984ea7076c9cc94f5b1b3b075c27680585f6a18d8affc",
+          "source": "services/api/migrate.sh"
+        },
+        "/app/requirements.txt": {
+          "sha256": "e006609e102a1675982ef9a51a542df3fd9e931af30429cb620f03be0bca0b67",
+          "source": "services/api/requirements.txt"
+        },
+        "/app/routers/__init__.py": {
+          "sha256": "c677c0c8a624cd41d7d4b2214c73efa993df4e3422ae2aff739d00983fdc12f4",
+          "source": "services/api/routers/__init__.py"
+        },
+        "/app/routers/admin.py": {
+          "sha256": "8e3034b056cb0df4080ae105679144a0cbdb939a6a33aaeaa5839d6bda325b24",
+          "source": "services/api/routers/admin.py"
+        },
+        "/app/routers/bulk_upload.py": {
+          "sha256": "b8faeedb178ba93803efbb9a8f73fb808cea0747bd68af67bc1db81926d2570d",
+          "source": "services/api/routers/bulk_upload.py"
+        },
+        "/app/routers/camera_alert_rules.py": {
+          "sha256": "98fe621d109bfaf8f31335bc98b7e9da8639e4048ccae1ebfcc62197e17ca333",
+          "source": "services/api/routers/camera_alert_rules.py"
+        },
+        "/app/routers/camera_reference_images.py": {
+          "sha256": "5b2866e78a8a3bd34deea9a18f387596a77c4a107749a1ed04f427ea4bef0e70",
+          "source": "services/api/routers/camera_reference_images.py"
+        },
+        "/app/routers/cameras.py": {
+          "sha256": "48d818d17a463016bb390b8b1cce1fd8ea4e1b6e502267eec80892e7e421c7f1",
+          "source": "services/api/routers/cameras.py"
+        },
+        "/app/routers/deployments.py": {
+          "sha256": "3aa8bd63ecd6237c9f02fcfc60b704697c3ab3901a4a475c649c4f58f16da839",
+          "source": "services/api/routers/deployments.py"
+        },
+        "/app/routers/detection_alert_rules.py": {
+          "sha256": "987f08cd8c56ff91cb4232566aeb6d630e24a66a9e894c7f65edcf60fddafed8",
+          "source": "services/api/routers/detection_alert_rules.py"
+        },
+        "/app/routers/devtools.py": {
+          "sha256": "2a2dceeb3d9b6fc3b9e4256262a6500dab2a474dc28e002075e2cf00364fb6b9",
+          "source": "services/api/routers/devtools.py"
+        },
+        "/app/routers/export.py": {
+          "sha256": "88382f18a00b95b462bbbde7b3e1d0f8edaae1a71bf1c5e9834c4fc25ce8af5b",
+          "source": "services/api/routers/export.py"
+        },
+        "/app/routers/feed.py": {
+          "sha256": "2579db630073edb6cbdb2570e445c416edebb7005700e81b0c227d82a89b368c",
+          "source": "services/api/routers/feed.py"
+        },
+        "/app/routers/health.py": {
+          "sha256": "55766ce80d6fadf7231bf5a45f885bea08866ca9a579096fc689dbb86b94b098",
+          "source": "services/api/routers/health.py"
+        },
+        "/app/routers/image_admin.py": {
+          "sha256": "e687e56fc544820de66cd5e1ef5d14ae710a481fa4b9d2f5ee86b81587ed7e01",
+          "source": "services/api/routers/image_admin.py"
+        },
+        "/app/routers/images.py": {
+          "sha256": "75787827066e18c65a8189d83019a79398e22867128e96488af1a1275c4b34ea",
+          "source": "services/api/routers/images.py"
+        },
+        "/app/routers/ingestion_monitoring.py": {
+          "sha256": "919ca4fa057f90bcd2bf298e355e1a0bb79dfac34fbfccdb7356bf4a921a2585",
+          "source": "services/api/routers/ingestion_monitoring.py"
+        },
+        "/app/routers/integrations.py": {
+          "sha256": "1603dcb69426854b1206c7e22ee5acf69f0ab33259931d181ce28c7036d5a0cf",
+          "source": "services/api/routers/integrations.py"
+        },
+        "/app/routers/live_feed.py": {
+          "sha256": "681db47dbf339642e3df68e140683cb16c412e788b782647e6424649388f8a05",
+          "source": "services/api/routers/live_feed.py"
+        },
+        "/app/routers/logs.py": {
+          "sha256": "f794d46bc2141bc2ce9fab07b554a365ada30a45a6486bdf31177cb1703cb78c",
+          "source": "services/api/routers/logs.py"
+        },
+        "/app/routers/notifications.py": {
+          "sha256": "66a8c928e143e87a85b2cfac629829d84898c8f040a775dcbc8692f3b0cdf182",
+          "source": "services/api/routers/notifications.py"
+        },
+        "/app/routers/project_documents.py": {
+          "sha256": "7036f7242da6a4f87d8390862beb9cd7a6f58fc066a918f747ba898c709a3e9e",
+          "source": "services/api/routers/project_documents.py"
+        },
+        "/app/routers/project_images.py": {
+          "sha256": "5ad779614a00e6f73c584ca98a5a49f2328a294e63bfe23a0ca63fbe286697da",
+          "source": "services/api/routers/project_images.py"
+        },
+        "/app/routers/projects.py": {
+          "sha256": "d17eb558fd178c1da2a06a3a82cbc7b6604fbd74f0b0adcfed782620c9187232",
+          "source": "services/api/routers/projects.py"
+        },
+        "/app/routers/reminders.py": {
+          "sha256": "c02177c521d67b68980a4a91b285bd7d7f56250c08cd9a96390df90a55268999",
+          "source": "services/api/routers/reminders.py"
+        },
+        "/app/routers/rule_helpers.py": {
+          "sha256": "10365bf2f90ffd470c4c110fb0c975b8a17234720b8f31a0aad928b4231d2a6b",
+          "source": "services/api/routers/rule_helpers.py"
+        },
+        "/app/routers/scheduled_reports.py": {
+          "sha256": "cf352e3135f7f7ae3475e9d838013251d314e5f4dd3e78c659435ae861c81b67",
+          "source": "services/api/routers/scheduled_reports.py"
+        },
+        "/app/routers/service.py": {
+          "sha256": "2b9beca19011850efc4fe87a52b297f2f4a2753e90aa9c0c95b982be0aa3cbf9",
+          "source": "services/api/routers/service.py"
+        },
+        "/app/routers/site_groups.py": {
+          "sha256": "6377f47a4e796b46b3d92b771e62dfb417b00c2d4d946ddb0484964b7aa40bfe",
+          "source": "services/api/routers/site_groups.py"
+        },
+        "/app/routers/sites.py": {
+          "sha256": "821b294aa4079e0c2a92e2a81a9e5bdd24f59018785bdf9f1ae5a80c837d74e0",
+          "source": "services/api/routers/sites.py"
+        },
+        "/app/routers/species.py": {
+          "sha256": "ef297a8fb4cff5031f755546b864278b007aa2a38b2591c318312a7a34d0179f",
+          "source": "services/api/routers/species.py"
+        },
+        "/app/routers/statistics.py": {
+          "sha256": "509d0d9a9c39bf5f8c9b403f615a60fee8ff93a8ee63861b0d84863faf7d93ba",
+          "source": "services/api/routers/statistics.py"
+        },
+        "/app/routers/theft_watch_rules.py": {
+          "sha256": "e5d1aaf54b8f3f89b972710e7dc48f19ad4b6667d9c47ae0d8f3ee4421a28ec3",
+          "source": "services/api/routers/theft_watch_rules.py"
+        },
+        "/app/routers/users.py": {
+          "sha256": "5d2820b49de58aa1219ef053a136ba069ab9e896fa7d3f95d3e41f3a39e8a6c4",
+          "source": "services/api/routers/users.py"
+        },
+        "/app/scripts/backfill_camera_tags_to_sites.py": {
+          "sha256": "49d7f43f475206548db23db9c14bdd66e55a26cbadf7cd2c42bf6b78bc5286fc",
+          "source": "scripts/backfill_camera_tags_to_sites.py"
+        },
+        "/app/scripts/backfill_deployment_periods.py": {
+          "sha256": "d6f902d5011be06b0c6dcef4fd14e2c456b1adaca78118cb91c1443ea30388bc",
+          "source": "scripts/backfill_deployment_periods.py"
+        },
+        "/app/scripts/backfill_sites.py": {
+          "sha256": "f0a1e98d05524a2b8bfd3be4273f9cd8461c3da5bd6ab2126fabe9537e6120b0",
+          "source": "scripts/backfill_sites.py"
+        },
+        "/app/scripts/backup.sh": {
+          "sha256": "1de07e29d0b6a99600d21a66e1d1888778cf138ed98a1a26cc6fac1dd8504f91",
+          "source": "scripts/backup.sh"
+        },
+        "/app/scripts/build-banner.sh": {
+          "sha256": "4b049fa67e983d58359690e25adaf5bcbcab6c8d7858bc75d157e41a7e7f6b15",
+          "source": "scripts/build-banner.sh"
+        },
+        "/app/scripts/cleanup_empty_deployments.py": {
+          "sha256": "68dd6bc52e2aede53d63f76b2b0692db1e8026ee0a58e8171088c8636a0902ab",
+          "source": "scripts/cleanup_empty_deployments.py"
+        },
+        "/app/scripts/cold_tier_orphan_check.sh": {
+          "sha256": "97ce94f2b3cde6f98de8c174c2a72a2b36124c8bf2f865d32bb262ac87bfb34a",
+          "source": "scripts/cold_tier_orphan_check.sh"
+        },
+        "/app/scripts/create_admin_invitation.py": {
+          "sha256": "db0c7e3699ed95da828cfbcd866ff4b0b9cd05e5451e0bb0afbbc126d9f1a919",
+          "source": "scripts/create_admin_invitation.py"
+        },
+        "/app/scripts/dev_send_demo_image.py": {
+          "sha256": "c308c522f73a30431d4662901c14464c2456c562e1c74118025fcc6511ea724e",
+          "source": "scripts/dev_send_demo_image.py"
+        },
+        "/app/scripts/dev_simulate_feed.py": {
+          "sha256": "c1a26267236ce02eb2e2af3ac7173ec7f603088eb022d51867c4b656a4e91de1",
+          "source": "scripts/dev_simulate_feed.py"
+        },
+        "/app/scripts/export_tamper_bakeoff_data.py": {
+          "sha256": "87c9058531ef5bde740c397d32850ecd3c024ef3df7875df0b41c1aa50119bc2",
+          "source": "scripts/export_tamper_bakeoff_data.py"
+        },
+        "/app/scripts/lib/sample-images.sql": {
+          "sha256": "944d3e85c4e200759a32f3e28dc6f2d88dde6cd4a4e991caeb2f61c8b78738ac",
+          "source": "scripts/lib/sample-images.sql"
+        },
+        "/app/scripts/merge_contiguous_deployments.py": {
+          "sha256": "361ca5fe0979a6a17c941aca85c0e455d8c8f49d0f63ccb8b5db622cd7ad4365",
+          "source": "scripts/merge_contiguous_deployments.py"
+        },
+        "/app/scripts/populate_demo_data.py": {
+          "sha256": "da6f99be99b7742650bd26e13ea61133bbbecd5daecaf6cc09a7848569abdd51",
+          "source": "scripts/populate_demo_data.py"
+        },
+        "/app/scripts/regenerate_thumbnails.py": {
+          "sha256": "54b29663914b15b0633424a9dafd5fca9b95241f5fb44e9b6c1257241446bdea",
+          "source": "scripts/regenerate_thumbnails.py"
+        },
+        "/app/scripts/rehydrate_cold_to_hot.py": {
+          "sha256": "1ecdcbb0ba3259f8e287a3b749ea76fcb387d943af2c99c300bcfb4654824c68",
+          "source": "scripts/rehydrate_cold_to_hot.py"
+        },
+        "/app/scripts/requeue_pending_images.py": {
+          "sha256": "c6c00b6a4f711ca1f1aa69d72f3988bf96aee5ee4eb67c81f8d7577a68696cb2",
+          "source": "scripts/requeue_pending_images.py"
+        },
+        "/app/scripts/restore-deleted-camera.sh": {
+          "sha256": "b73dcd446d366289cd10ef9471c5d181e9c73839520331383879030a8632c935",
+          "source": "scripts/restore-deleted-camera.sh"
+        },
+        "/app/scripts/restore.sh": {
+          "sha256": "c92f3b907220a9623c405e86ca75e4f8ad3c4c081fad3900d26fc769cde91663",
+          "source": "scripts/restore.sh"
+        },
+        "/app/scripts/security-status.sh": {
+          "sha256": "1eeb40db1b8f541a1d66f0753fe8d7f047314995c97d6a70350138ed58d673c0",
+          "source": "scripts/security-status.sh"
+        },
+        "/app/scripts/shift_demo_dates.py": {
+          "sha256": "a033974db982dfb737c7622b0963cba6a2b1e0fce2e30bc4af79faa280e11317",
+          "source": "scripts/shift_demo_dates.py"
+        },
+        "/app/scripts/test-update-sweep.sh": {
+          "sha256": "9dbde4e13b806b0b07a775f7f9ab553cb52e7788877ddeef4af60234269cc0b9",
+          "source": "scripts/test-update-sweep.sh"
+        },
+        "/app/scripts/test-update.sh": {
+          "sha256": "2085173c3c8aea721587192cbba5a0132f8481a8ec63acc112131119dc1a14e3",
+          "source": "scripts/test-update.sh"
+        },
+        "/app/scripts/update-database.sh": {
+          "sha256": "28e5c758dd8fa5a8c8b2bf0ab6380831264c20d8215d903d6129940a8a56f5fd",
+          "source": "scripts/update-database.sh"
+        },
+        "/app/scripts/verify-redis-security.sh": {
+          "sha256": "71129ad6141022ca6dcdfc83abc57211216a08bbf5f6ef1847c4e242b14d8510",
+          "source": "scripts/verify-redis-security.sh"
+        },
+        "/app/scripts/verify-server.sh": {
+          "sha256": "c923c5d1fafd440e17a3605a9d3927e732e25066afe67a0702e0a871d6f94e4a",
+          "source": "scripts/verify-server.sh"
+        },
+        "/app/test_backend_changes.py": {
+          "sha256": "f4377341c3e15e9be623976078db234fd8edcb2327d2fbf6e02ee1f112adecc4",
+          "source": "services/api/test_backend_changes.py"
+        },
+        "/app/utils/__init__.py": {
+          "sha256": "425b2678163f7df18b37e845580eebbebbfe0454798a780cbe8462fe2692739f",
+          "source": "services/api/utils/__init__.py"
+        },
+        "/app/utils/activity_analysis.py": {
+          "sha256": "a9f217d0d23af9012adf296847b680090df8a8244073c20e0736e88ff73e3d81",
+          "source": "services/api/utils/activity_analysis.py"
+        },
+        "/app/utils/annotated_image_generator.py": {
+          "sha256": "ae2069cba52d3353c5b836f9425f2b7dbc4cd42540a9914b262419eb4b105dbd",
+          "source": "services/api/utils/annotated_image_generator.py"
+        },
+        "/app/utils/camera_recency.py": {
+          "sha256": "f0fdb05f4c4e07a3348a7cac892578e187e0d761e2e1d9240f734e81e80e447d",
+          "source": "services/api/utils/camera_recency.py"
+        },
+        "/app/utils/camera_rejections.py": {
+          "sha256": "e20747139a4d5cfba0eede079b10aab9058eb04116cabc7f0d77bb8487fd8a46",
+          "source": "services/api/utils/camera_rejections.py"
+        },
+        "/app/utils/deployment_edits.py": {
+          "sha256": "1c7631c565cc90ee01b681e7b2b801c286e7666b071e3140a8c95b32baf93d90",
+          "source": "services/api/utils/deployment_edits.py"
+        },
+        "/app/utils/detection_filtering.py": {
+          "sha256": "c99eaeb8c3cc66bbd8ad71a923301f07c5694382ad540679918a1b1b615ee0fb",
+          "source": "services/api/utils/detection_filtering.py"
+        },
+        "/app/utils/dev_mode.py": {
+          "sha256": "ef607336bda930102ad422c23b4d975d8b2d0632dd9aeef1aba90aa833d5457d",
+          "source": "services/api/utils/dev_mode.py"
+        },
+        "/app/utils/feed.py": {
+          "sha256": "6eb66524badd1af888e6a04fb38b48c774a97a714715d93e4a526843a398c83f",
+          "source": "services/api/utils/feed.py"
+        },
+        "/app/utils/image_processing.py": {
+          "sha256": "9ad769b93689be45878e1695209621cda45e05853248357c4888d62fe0dbaf7d",
+          "source": "services/api/utils/image_processing.py"
+        },
+        "/app/utils/occupancy_model.py": {
+          "sha256": "5c9d8de7e0a210732f3c08121040fc083485cfe9035138534a27db010c3e522d",
+          "source": "services/api/utils/occupancy_model.py"
+        },
+        "/app/utils/performance_pairing.py": {
+          "sha256": "e30a7ea569788823512c3a0aab8e51311a44c73e52c3b6f97ad840b92f4224a3",
+          "source": "services/api/utils/performance_pairing.py"
+        },
+        "/app/utils/preferred_counts.py": {
+          "sha256": "a1d592addd8c7bd32d2fe70a01f278e7412df3c475a69add288bc212ec16b48d",
+          "source": "services/api/utils/preferred_counts.py"
+        },
+        "/app/utils/site_scope.py": {
+          "sha256": "ce14ad1781591f05b6174b4a9c30561a2d5a22be8c95dd6513cecedfe865152d",
+          "source": "services/api/utils/site_scope.py"
+        },
+        "/app/utils/sun_time.py": {
+          "sha256": "d756e763d0576b9a6e0ff2929026ef79402490598631904b1b658bcaf895d080",
+          "source": "services/api/utils/sun_time.py"
+        },
+        "/app/utils/tags.py": {
+          "sha256": "e9547d26c35619e12c050aeab891437fb7a43e33083422422e5f6734fd508702",
+          "source": "services/api/utils/tags.py"
+        },
+        "/app/utils/timeline.py": {
+          "sha256": "38f2cf62f761075e431543298ae9f8236503edf4b39813fa410a83db54eb9d82",
+          "source": "services/api/utils/timeline.py"
+        },
+        "/app/utils/timeline_activity.py": {
+          "sha256": "5e7cd5427bc4912046722717fc57c986eed3fb556ff7e2d1876df6c303363c58",
+          "source": "services/api/utils/timeline_activity.py"
+        },
+        "/shared/pyproject.toml": {
+          "sha256": "7c27ee4f81c42b3cfc01844d55bdc1beb3492ff1da912de3be8027bea48ebd08",
+          "source": "shared/pyproject.toml"
+        },
+        "/shared/shared/__init__.py": {
+          "sha256": "050823ac2828924f9f87d0670b48ad91052199ef445b8e8bdf019ea5f5e74f1c",
+          "source": "shared/shared/__init__.py"
+        },
+        "/shared/shared/bulk_jobs.py": {
+          "sha256": "3e9a6dfd4246e103c28caaf64820003b1b005bb47387a134c25647f8b8d849b1",
+          "source": "shared/shared/bulk_jobs.py"
+        },
+        "/shared/shared/camera_profiles.py": {
+          "sha256": "8faa8dd8652baec3ed82e59f78ba03ada9af5f42f12c96fb50003ce5853b928b",
+          "source": "shared/shared/camera_profiles.py"
+        },
+        "/shared/shared/camera_status.py": {
+          "sha256": "53f547f5ed1eef7ce6fa82bab063785d3c43253c4a91de8d562516e694bb6b7a",
+          "source": "shared/shared/camera_status.py"
+        },
+        "/shared/shared/classification_models.py": {
+          "sha256": "dcd0ed7cf6eec6e132da75360914c613d566526ec223026a95922bfc5c248b71",
+          "source": "shared/shared/classification_models.py"
+        },
+        "/shared/shared/classification_threshold.py": {
+          "sha256": "d7d63e28718e5e09317964394bbd292794ffe4fab238bf285e21342ecd86fe47",
+          "source": "shared/shared/classification_threshold.py"
+        },
+        "/shared/shared/config.py": {
+          "sha256": "9a4adad20004530ac9f031e37fdca55a248791acc928544f3389528bc0348562",
+          "source": "shared/shared/config.py"
+        },
+        "/shared/shared/database.py": {
+          "sha256": "cd8abff1b240fe309cd4de579f5c9b8f87fc91572a0a1e4f125176a974450cbe",
+          "source": "shared/shared/database.py"
+        },
+        "/shared/shared/deployments.py": {
+          "sha256": "78d478148ae21b774fd4e4c62dbef35fcfc458ca753c930161e104e4416ad10c",
+          "source": "shared/shared/deployments.py"
+        },
+        "/shared/shared/device.py": {
+          "sha256": "4b302273f512f4a333af64b950f39a0cd18383bcfe48d1790c5138831e2e6aff",
+          "source": "shared/shared/device.py"
+        },
+        "/shared/shared/earthranger.py": {
+          "sha256": "a5f0e147534e6550bb4a59d5432dd2e0fa463876ad560ff568d367c9a585def5",
+          "source": "shared/shared/earthranger.py"
+        },
+        "/shared/shared/email_renderer.py": {
+          "sha256": "5476568034dec5e4964bb3dce8c5760eba62f25c6cae91efa93504681f2827de",
+          "source": "shared/shared/email_renderer.py"
+        },
+        "/shared/shared/geo.py": {
+          "sha256": "d06115a202c728091fddae436cb3a0f3506bf9819a6ed7bef4744d7b53cf607d",
+          "source": "shared/shared/geo.py"
+        },
+        "/shared/shared/independence_filter.py": {
+          "sha256": "4267ae1a88381caf946e71348059a8a90d87a21eca262a23d19bb239a3e89d60",
+          "source": "shared/shared/independence_filter.py"
+        },
+        "/shared/shared/label_source.py": {
+          "sha256": "b71ed937f4f9edf0299d6472e3a5842e214d5a2a53b940ea1b3bd57fa64e6c48",
+          "source": "shared/shared/label_source.py"
+        },
+        "/shared/shared/logger.py": {
+          "sha256": "9eab34cca58b9c08899d0b18390f91e48b65facdb1332d5f94f5028614cd5b98",
+          "source": "shared/shared/logger.py"
+        },
+        "/shared/shared/models.py": {
+          "sha256": "6ca370cd4b77c0ba4e20b31fddaa5c10abbab3c0a6bc534ae5f7d2779aee6899",
+          "source": "shared/shared/models.py"
+        },
+        "/shared/shared/notify_guard.py": {
+          "sha256": "524a1caad47f39f5cebf8a3931ac1179b3042547f4d37211d5b3e735b5decb56",
+          "source": "shared/shared/notify_guard.py"
+        },
+        "/shared/shared/privacy.py": {
+          "sha256": "0280c1dfc357e80a2bcd13b0dcab7e66b5c43bd75724fd228107c50adc80359a",
+          "source": "shared/shared/privacy.py"
+        },
+        "/shared/shared/project_channels.py": {
+          "sha256": "55d7bfdb27833fd2f28c0a836149cb23b9e67482962037ee77dae905c4a0e296",
+          "source": "shared/shared/project_channels.py"
+        },
+        "/shared/shared/queue.py": {
+          "sha256": "2c438586a4c0e447780aa87efabfc438bd33ffd5d9f778ed8679d6c0c1ce4064",
+          "source": "shared/shared/queue.py"
+        },
+        "/shared/shared/sensingclues.py": {
+          "sha256": "97fe211d6c23981aa2da84920d4af08f27110d08bfcb996600386bcdbb018e61",
+          "source": "shared/shared/sensingclues.py"
+        },
+        "/shared/shared/species.py": {
+          "sha256": "d21dd97ed1020ab6c6e42f9cca115428d93256d4cfe0a71f2f05e32c17dec357",
+          "source": "shared/shared/species.py"
+        },
+        "/shared/shared/storage.py": {
+          "sha256": "9b73c0de6c1a1a6b65f90b04dfbf4e894b669643b5663c14d59c5dcf12c54347",
+          "source": "shared/shared/storage.py"
+        },
+        "/shared/shared/taxonomy.py": {
+          "sha256": "2affa1faf8e2f48565d2eb4c3db3a13105b1249830e28e1b7d4fcbe25b4ed6af",
+          "source": "shared/shared/taxonomy.py"
+        },
+        "/shared/shared/templates/base_email.html": {
+          "sha256": "437b7bbd749335018a7962eb4e127ffd6e8fb2a21acbf5dd37375ea3a9b3f578",
+          "source": "shared/shared/templates/base_email.html"
+        },
+        "/shared/shared/templates/camera_alert.html": {
+          "sha256": "e9ff01eafc1c88c248fb067f23398179c1282ace8ca64e7b7b1cbf40b3bc43d7",
+          "source": "shared/shared/templates/camera_alert.html"
+        },
+        "/shared/shared/templates/detection_alert.html": {
+          "sha256": "8a5354c5401ca2c147b013bfa0d853e56618ecd6e700cd666a65a5b862a2c005",
+          "source": "shared/shared/templates/detection_alert.html"
+        },
+        "/shared/shared/templates/disk_usage_alert.html": {
+          "sha256": "0534ae1376d1463faa5ff481c79a5ff7f079d81a640441472c9c4b6983faae38",
+          "source": "shared/shared/templates/disk_usage_alert.html"
+        },
+        "/shared/shared/templates/email_report.html": {
+          "sha256": "99f1b3665b37204243762493ba7eebb5d715c49331cc138ce71041fbb5e5e22f",
+          "source": "shared/shared/templates/email_report.html"
+        },
+        "/shared/shared/templates/email_verification.html": {
+          "sha256": "1e99bcd7a09b4af56e974c30567dc317db9434f8a6c28d813b4b2af64918f3dc",
+          "source": "shared/shared/templates/email_verification.html"
+        },
+        "/shared/shared/templates/excessive_images_alert.html": {
+          "sha256": "98694f85ec56673765e2cff070287f769ae84c9cf7946e878757bb4e9b3769c1",
+          "source": "shared/shared/templates/excessive_images_alert.html"
+        },
+        "/shared/shared/templates/infra_alert.html": {
+          "sha256": "9e6f6e5d3f227912be3f4583952d43512438ffd93fbf64dd5ab5861e900f45d6",
+          "source": "shared/shared/templates/infra_alert.html"
+        },
+        "/shared/shared/templates/password_reset.html": {
+          "sha256": "37e08d50e745c40fe99fb8f6aa0852dc57d5d786e3196bd3793259439f693c00",
+          "source": "shared/shared/templates/password_reset.html"
+        },
+        "/shared/shared/templates/project_assignment.html": {
+          "sha256": "2bb9c3b163b4b401efc68192f17ed0e607ed9a79df57c1cf03dd9a1110cbe9e0",
+          "source": "shared/shared/templates/project_assignment.html"
+        },
+        "/shared/shared/templates/project_inactivity_alert.html": {
+          "sha256": "d6f306a21cc2971d35f504a8d7c69cdc0cc2aa34ae24cf7e2cdeb223d5545293",
+          "source": "shared/shared/templates/project_inactivity_alert.html"
+        },
+        "/shared/shared/templates/project_invitation.html": {
+          "sha256": "48b29b658404e1c777d63dcc7a6b742cc710fa9df9343363fb50c42deed8fcb5",
+          "source": "shared/shared/templates/project_invitation.html"
+        },
+        "/shared/shared/templates/project_reminder.html": {
+          "sha256": "c3d4a9c938fe44e4918e390f43dd3aea5ad2f00b313c860fae80bc80ced303cc",
+          "source": "shared/shared/templates/project_reminder.html"
+        },
+        "/shared/shared/templates/project_role_change.html": {
+          "sha256": "8e096547df9e07d988dea37acd6f074fb74a7b0b2dd5282f6dad8214b8249ec5",
+          "source": "shared/shared/templates/project_role_change.html"
+        },
+        "/shared/shared/templates/scheduled_species_report.html": {
+          "sha256": "978b8171853478f63dd84026b7248ea29712430a1c0022d066ad923da4375e60",
+          "source": "shared/shared/templates/scheduled_species_report.html"
+        },
+        "/shared/shared/templates/server_admin_invitation.html": {
+          "sha256": "eb75042d9baf2c16e52f33cda1b8bf03481b2e326d4212dc019fb38b6ecacb8c",
+          "source": "shared/shared/templates/server_admin_invitation.html"
+        },
+        "/shared/shared/templates/server_admin_promotion.html": {
+          "sha256": "03ca6fcd5c16660d3061fac341893f6083030f08f292d9dddfbeb0c911d55f33",
+          "source": "shared/shared/templates/server_admin_promotion.html"
+        },
+        "/shared/shared/templates/service_tasks_assigned.html": {
+          "sha256": "4fcaf3f15fb365866f1e6b374e4f0e938fef1aabbbd4cad9a91d88f9f93a8b6f",
+          "source": "shared/shared/templates/service_tasks_assigned.html"
+        },
+        "/shared/shared/templates/sim_expiry_alert.html": {
+          "sha256": "a835cb480fe4daaf6311e75e7f2c2dbb4dd796fe50f891a2e7cb92844ac77c52",
+          "source": "shared/shared/templates/sim_expiry_alert.html"
+        },
+        "/shared/shared/templates/theft_watch_person.html": {
+          "sha256": "1535ebe12ea8fd4d40d9074b6915237a76cdcd8eba34f84d741a1aa4f2e2ea39",
+          "source": "shared/shared/templates/theft_watch_person.html"
+        },
+        "/shared/shared/templates/theft_watch_silence.html": {
+          "sha256": "5bc061c68134ea2c1ed401cf5cb6b65e68d0a5f5bdcd4d86f621275a7b589c40",
+          "source": "shared/shared/templates/theft_watch_silence.html"
+        },
+        "/shared/shared/timestamps.py": {
+          "sha256": "353774cbccb5fad20b87b472fcddad2fefbfe7832bce0aef8cf9d7ad416404c3",
+          "source": "shared/shared/timestamps.py"
+        }
+      },
+      "image_id": "191a1ccea0fe7209761b5a1abbf24967e1dd8442b2bdbf746b4a55879f70f0b7",
+      "image_name": "localhost/trailcam-connect-api:v016-arm64-20261015"
+    },
+    "addax-pilot-bulk": {
+      "files": {
+        "/app/Dockerfile": {
+          "sha256": "79f3701f5816b3cfd841064a6eb89a0ed1d9dd69585f315c601396bbea74627d",
+          "source": "services/bulk-upload/Dockerfile"
+        },
+        "/app/requirements.txt": {
+          "sha256": "1210f616b5abacbb591a002166c958f3271c97d7530d8b8407de39e4a6a08453",
+          "source": "services/bulk-upload/requirements.txt"
+        },
+        "/app/worker.py": {
+          "sha256": "eb26d5550ed8b347bcb853df2be3f7cc6393ac23e8852919b0935112f3d3fb51",
+          "source": "services/bulk-upload/worker.py"
+        },
+        "/ingestion_lib/Dockerfile": {
+          "sha256": "0a4000dc90117321afb667626f38b1c982e9861e3c1e85cd1536e5fb01608e0f",
+          "source": "services/ingestion/Dockerfile"
+        },
+        "/ingestion_lib/daily_report_parser.py": {
+          "sha256": "d91b75864616338943817ee14a81e68df2722ba3434a587c8f60ce547ae9ff13",
+          "source": "services/ingestion/daily_report_parser.py"
+        },
+        "/ingestion_lib/db_operations.py": {
+          "sha256": "cab89830098058c6a1b0cc71e80e8b733f9d5532c6f9bd94c112a0e6ef70c22f",
+          "source": "deployment/deployed-baseline/overlays/bulk-upload/ingestion/db_operations.py"
+        },
+        "/ingestion_lib/exif_parser.py": {
+          "sha256": "d44ed96b42bdf932f02d6e5ba95862ab1a1faaa6d9d04263fb76c64475e9b958",
+          "source": "services/ingestion/exif_parser.py"
+        },
+        "/ingestion_lib/main.py": {
+          "sha256": "98ebc4bb5355ed74fecd406afb9010ec3f12938fea1e3e05296d5c40b0bb5429",
+          "source": "services/ingestion/main.py"
+        },
+        "/ingestion_lib/requirements.txt": {
+          "sha256": "2d585276ece2c2025c003f81a04f56b33c92ce8107ac7153d5fb2346accebc2c",
+          "source": "services/ingestion/requirements.txt"
+        },
+        "/ingestion_lib/storage_operations.py": {
+          "sha256": "609963c1472f44bacced99af346b00610a5331ec98980866abaeb57e352467f3",
+          "source": "services/ingestion/storage_operations.py"
+        },
+        "/ingestion_lib/utils.py": {
+          "sha256": "3a7e847db77523b2687d7efad22da832d4a23634576756fe8dbcfb0052a63933",
+          "source": "services/ingestion/utils.py"
+        },
+        "/ingestion_lib/validators.py": {
+          "sha256": "0ada56cc07d9cad14b9d4d81b1f83c4a04855aff8347aa0d8890469f4e9dd171",
+          "source": "deployment/deployed-baseline/overlays/bulk-upload/ingestion/validators.py"
+        },
+        "/shared/pyproject.toml": {
+          "sha256": "7c27ee4f81c42b3cfc01844d55bdc1beb3492ff1da912de3be8027bea48ebd08",
+          "source": "shared/pyproject.toml"
+        },
+        "/shared/shared/__init__.py": {
+          "sha256": "050823ac2828924f9f87d0670b48ad91052199ef445b8e8bdf019ea5f5e74f1c",
+          "source": "shared/shared/__init__.py"
+        },
+        "/shared/shared/bulk_jobs.py": {
+          "sha256": "3e9a6dfd4246e103c28caaf64820003b1b005bb47387a134c25647f8b8d849b1",
+          "source": "shared/shared/bulk_jobs.py"
+        },
+        "/shared/shared/bulk_outcomes.py": {
+          "sha256": "93caefb8f8b30c1758bbacf0b77b74337d24785f46c49cee0e27749f03a8264d",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/bulk_outcomes.py"
+        },
+        "/shared/shared/camera_profiles.py": {
+          "sha256": "8faa8dd8652baec3ed82e59f78ba03ada9af5f42f12c96fb50003ce5853b928b",
+          "source": "shared/shared/camera_profiles.py"
+        },
+        "/shared/shared/camera_status.py": {
+          "sha256": "e5265f37e2b6754e4c1cccb54da3e0d4ef6c1e0ff283fd400ed68b3de3d48f92",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/camera_status.py"
+        },
+        "/shared/shared/classification_models.py": {
+          "sha256": "dcd0ed7cf6eec6e132da75360914c613d566526ec223026a95922bfc5c248b71",
+          "source": "shared/shared/classification_models.py"
+        },
+        "/shared/shared/classification_threshold.py": {
+          "sha256": "d7d63e28718e5e09317964394bbd292794ffe4fab238bf285e21342ecd86fe47",
+          "source": "shared/shared/classification_threshold.py"
+        },
+        "/shared/shared/config.py": {
+          "sha256": "9a4adad20004530ac9f031e37fdca55a248791acc928544f3389528bc0348562",
+          "source": "shared/shared/config.py"
+        },
+        "/shared/shared/database.py": {
+          "sha256": "cd8abff1b240fe309cd4de579f5c9b8f87fc91572a0a1e4f125176a974450cbe",
+          "source": "shared/shared/database.py"
+        },
+        "/shared/shared/deployments.py": {
+          "sha256": "78d478148ae21b774fd4e4c62dbef35fcfc458ca753c930161e104e4416ad10c",
+          "source": "shared/shared/deployments.py"
+        },
+        "/shared/shared/device.py": {
+          "sha256": "4b302273f512f4a333af64b950f39a0cd18383bcfe48d1790c5138831e2e6aff",
+          "source": "shared/shared/device.py"
+        },
+        "/shared/shared/earthranger.py": {
+          "sha256": "a5f0e147534e6550bb4a59d5432dd2e0fa463876ad560ff568d367c9a585def5",
+          "source": "shared/shared/earthranger.py"
+        },
+        "/shared/shared/email_renderer.py": {
+          "sha256": "5476568034dec5e4964bb3dce8c5760eba62f25c6cae91efa93504681f2827de",
+          "source": "shared/shared/email_renderer.py"
+        },
+        "/shared/shared/geo.py": {
+          "sha256": "d06115a202c728091fddae436cb3a0f3506bf9819a6ed7bef4744d7b53cf607d",
+          "source": "shared/shared/geo.py"
+        },
+        "/shared/shared/health_probe.py": {
+          "sha256": "43a85ffd8ddd2ad8b3b20e80ec6fa442dbe5c041deea0bce92c87361a3de50b5",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/health_probe.py"
+        },
+        "/shared/shared/independence_filter.py": {
+          "sha256": "4267ae1a88381caf946e71348059a8a90d87a21eca262a23d19bb239a3e89d60",
+          "source": "shared/shared/independence_filter.py"
+        },
+        "/shared/shared/label_source.py": {
+          "sha256": "b71ed937f4f9edf0299d6472e3a5842e214d5a2a53b940ea1b3bd57fa64e6c48",
+          "source": "shared/shared/label_source.py"
+        },
+        "/shared/shared/logger.py": {
+          "sha256": "9eab34cca58b9c08899d0b18390f91e48b65facdb1332d5f94f5028614cd5b98",
+          "source": "shared/shared/logger.py"
+        },
+        "/shared/shared/models.py": {
+          "sha256": "b807a35304d83febe776c352b218ddae5aa998eab4885d6789ebb8a7632b4ea6",
+          "source": "deployment/deployed-baseline/overlays/bulk-upload/shared/shared/models.py"
+        },
+        "/shared/shared/notify_guard.py": {
+          "sha256": "524a1caad47f39f5cebf8a3931ac1179b3042547f4d37211d5b3e735b5decb56",
+          "source": "shared/shared/notify_guard.py"
+        },
+        "/shared/shared/pipeline_recovery.py": {
+          "sha256": "9a91dfe6a10f764d8322fb6f016f6a8b92648ad170b5fb340ab6fb58e5cffb98",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/pipeline_recovery.py"
+        },
+        "/shared/shared/project_channels.py": {
+          "sha256": "55d7bfdb27833fd2f28c0a836149cb23b9e67482962037ee77dae905c4a0e296",
+          "source": "shared/shared/project_channels.py"
+        },
+        "/shared/shared/queue.py": {
+          "sha256": "d2e176bd879527e73c3791c1a588b95c28ef2f6bc987dd1ddd5eb50aea42906f",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/queue.py"
+        },
+        "/shared/shared/sensingclues.py": {
+          "sha256": "97fe211d6c23981aa2da84920d4af08f27110d08bfcb996600386bcdbb018e61",
+          "source": "shared/shared/sensingclues.py"
+        },
+        "/shared/shared/species.py": {
+          "sha256": "d21dd97ed1020ab6c6e42f9cca115428d93256d4cfe0a71f2f05e32c17dec357",
+          "source": "shared/shared/species.py"
+        },
+        "/shared/shared/storage.py": {
+          "sha256": "21585867bea3a1308e2a0131d1820b16d12fb30bbe2b68db2f002ded0132001c",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/storage.py"
+        },
+        "/shared/shared/taxonomy.py": {
+          "sha256": "2affa1faf8e2f48565d2eb4c3db3a13105b1249830e28e1b7d4fcbe25b4ed6af",
+          "source": "shared/shared/taxonomy.py"
+        },
+        "/shared/shared/templates/base_email.html": {
+          "sha256": "437b7bbd749335018a7962eb4e127ffd6e8fb2a21acbf5dd37375ea3a9b3f578",
+          "source": "shared/shared/templates/base_email.html"
+        },
+        "/shared/shared/templates/camera_alert.html": {
+          "sha256": "e9ff01eafc1c88c248fb067f23398179c1282ace8ca64e7b7b1cbf40b3bc43d7",
+          "source": "shared/shared/templates/camera_alert.html"
+        },
+        "/shared/shared/templates/detection_alert.html": {
+          "sha256": "8a5354c5401ca2c147b013bfa0d853e56618ecd6e700cd666a65a5b862a2c005",
+          "source": "shared/shared/templates/detection_alert.html"
+        },
+        "/shared/shared/templates/disk_usage_alert.html": {
+          "sha256": "0534ae1376d1463faa5ff481c79a5ff7f079d81a640441472c9c4b6983faae38",
+          "source": "shared/shared/templates/disk_usage_alert.html"
+        },
+        "/shared/shared/templates/email_report.html": {
+          "sha256": "99f1b3665b37204243762493ba7eebb5d715c49331cc138ce71041fbb5e5e22f",
+          "source": "shared/shared/templates/email_report.html"
+        },
+        "/shared/shared/templates/email_verification.html": {
+          "sha256": "1e99bcd7a09b4af56e974c30567dc317db9434f8a6c28d813b4b2af64918f3dc",
+          "source": "shared/shared/templates/email_verification.html"
+        },
+        "/shared/shared/templates/excessive_images_alert.html": {
+          "sha256": "98694f85ec56673765e2cff070287f769ae84c9cf7946e878757bb4e9b3769c1",
+          "source": "shared/shared/templates/excessive_images_alert.html"
+        },
+        "/shared/shared/templates/infra_alert.html": {
+          "sha256": "9e6f6e5d3f227912be3f4583952d43512438ffd93fbf64dd5ab5861e900f45d6",
+          "source": "shared/shared/templates/infra_alert.html"
+        },
+        "/shared/shared/templates/password_reset.html": {
+          "sha256": "37e08d50e745c40fe99fb8f6aa0852dc57d5d786e3196bd3793259439f693c00",
+          "source": "shared/shared/templates/password_reset.html"
+        },
+        "/shared/shared/templates/project_assignment.html": {
+          "sha256": "2bb9c3b163b4b401efc68192f17ed0e607ed9a79df57c1cf03dd9a1110cbe9e0",
+          "source": "shared/shared/templates/project_assignment.html"
+        },
+        "/shared/shared/templates/project_inactivity_alert.html": {
+          "sha256": "d6f306a21cc2971d35f504a8d7c69cdc0cc2aa34ae24cf7e2cdeb223d5545293",
+          "source": "shared/shared/templates/project_inactivity_alert.html"
+        },
+        "/shared/shared/templates/project_invitation.html": {
+          "sha256": "48b29b658404e1c777d63dcc7a6b742cc710fa9df9343363fb50c42deed8fcb5",
+          "source": "shared/shared/templates/project_invitation.html"
+        },
+        "/shared/shared/templates/project_reminder.html": {
+          "sha256": "c3d4a9c938fe44e4918e390f43dd3aea5ad2f00b313c860fae80bc80ced303cc",
+          "source": "shared/shared/templates/project_reminder.html"
+        },
+        "/shared/shared/templates/project_role_change.html": {
+          "sha256": "8e096547df9e07d988dea37acd6f074fb74a7b0b2dd5282f6dad8214b8249ec5",
+          "source": "shared/shared/templates/project_role_change.html"
+        },
+        "/shared/shared/templates/scheduled_species_report.html": {
+          "sha256": "978b8171853478f63dd84026b7248ea29712430a1c0022d066ad923da4375e60",
+          "source": "shared/shared/templates/scheduled_species_report.html"
+        },
+        "/shared/shared/templates/server_admin_invitation.html": {
+          "sha256": "eb75042d9baf2c16e52f33cda1b8bf03481b2e326d4212dc019fb38b6ecacb8c",
+          "source": "shared/shared/templates/server_admin_invitation.html"
+        },
+        "/shared/shared/templates/server_admin_promotion.html": {
+          "sha256": "03ca6fcd5c16660d3061fac341893f6083030f08f292d9dddfbeb0c911d55f33",
+          "source": "shared/shared/templates/server_admin_promotion.html"
+        },
+        "/shared/shared/templates/service_tasks_assigned.html": {
+          "sha256": "4fcaf3f15fb365866f1e6b374e4f0e938fef1aabbbd4cad9a91d88f9f93a8b6f",
+          "source": "shared/shared/templates/service_tasks_assigned.html"
+        },
+        "/shared/shared/templates/sim_expiry_alert.html": {
+          "sha256": "a835cb480fe4daaf6311e75e7f2c2dbb4dd796fe50f891a2e7cb92844ac77c52",
+          "source": "shared/shared/templates/sim_expiry_alert.html"
+        },
+        "/shared/shared/templates/theft_watch_person.html": {
+          "sha256": "1535ebe12ea8fd4d40d9074b6915237a76cdcd8eba34f84d741a1aa4f2e2ea39",
+          "source": "shared/shared/templates/theft_watch_person.html"
+        },
+        "/shared/shared/templates/theft_watch_silence.html": {
+          "sha256": "5bc061c68134ea2c1ed401cf5cb6b65e68d0a5f5bdcd4d86f621275a7b589c40",
+          "source": "shared/shared/templates/theft_watch_silence.html"
+        },
+        "/shared/shared/timestamps.py": {
+          "sha256": "353774cbccb5fad20b87b472fcddad2fefbfe7832bce0aef8cf9d7ad416404c3",
+          "source": "shared/shared/timestamps.py"
+        }
+      },
+      "image_id": "f35e81b4a10b525f19090e5decabf41f8d1c82466add6e820192fdafb1e21942",
+      "image_name": "sha256:f35e81b4a10b525f19090e5decabf41f8d1c82466add6e820192fdafb1e21942"
+    },
+    "addax-pilot-detection": {
+      "files": {
+        "/app/Dockerfile": {
+          "sha256": "8e63516fbec4176ff69eb16a90197a99b597f4ddc45eabed21d25ad61958d766",
+          "source": "services/detection/Dockerfile"
+        },
+        "/app/benchmark_detection.py": {
+          "sha256": "9fbb6752569be5a219c51e7e6e9818dd26cdc3c23510bd2d94f646b2cdbfb780",
+          "source": "services/detection/benchmark_detection.py"
+        },
+        "/app/config.py": {
+          "sha256": "2b3b76cd5755c55a983edff96128e87c05bb848862a10e502d042509d38c80a7",
+          "source": "services/detection/config.py"
+        },
+        "/app/cropper.py": {
+          "sha256": "2f9fea47815ac1ac94c5679004d65dc58e4e418daeef405b5c574159e5a796c2",
+          "source": "services/detection/cropper.py"
+        },
+        "/app/db_operations.py": {
+          "sha256": "8c2df4701a73c4d9cbe3bc3d08ae942182676b6c2f951ddf10bb774e4afd2441",
+          "source": "services/detection/db_operations.py"
+        },
+        "/app/detector.py": {
+          "sha256": "5470809aa311454e57d117cdfb296af517e81a4443e76f463e1602bbab05aa88",
+          "source": "services/detection/detector.py"
+        },
+        "/app/model_loader.py": {
+          "sha256": "20b41ca8b5b88e3639cb354c758f86107bf72554a93b2e3ce6bed4417ddf9b3d",
+          "source": "services/detection/model_loader.py"
+        },
+        "/app/requirements.txt": {
+          "sha256": "ffd7d52f5509ae60e70d7c3442edd94b09c99e69b28ea50bedb51cd037c1e6f1",
+          "source": "services/detection/requirements.txt"
+        },
+        "/app/storage_operations.py": {
+          "sha256": "d402250b404493ccfbe28ec9c7eb10afbe161a17a452cf4e26ac16bac20dff21",
+          "source": "services/detection/storage_operations.py"
+        },
+        "/app/test_detection.py": {
+          "sha256": "5a87f93a54db3b5e7aa01a56ea40da687c9717a886ccaf23d8f93bff74e88bc9",
+          "source": "services/detection/test_detection.py"
+        },
+        "/app/validate_exact_match.py": {
+          "sha256": "fb2afe9373607e2c13178e36c44c8e166122021241e0c8e403fb59b6a95352c6",
+          "source": "services/detection/validate_exact_match.py"
+        },
+        "/app/worker.py": {
+          "sha256": "54bd04d74adb5cb00e5ed9be8bf729c94bff558c9168e3f8c5e7808d25de29f2",
+          "source": "services/detection/worker.py"
+        },
+        "/shared/pyproject.toml": {
+          "sha256": "7c27ee4f81c42b3cfc01844d55bdc1beb3492ff1da912de3be8027bea48ebd08",
+          "source": "shared/pyproject.toml"
+        },
+        "/shared/shared/__init__.py": {
+          "sha256": "050823ac2828924f9f87d0670b48ad91052199ef445b8e8bdf019ea5f5e74f1c",
+          "source": "shared/shared/__init__.py"
+        },
+        "/shared/shared/bulk_jobs.py": {
+          "sha256": "3e9a6dfd4246e103c28caaf64820003b1b005bb47387a134c25647f8b8d849b1",
+          "source": "shared/shared/bulk_jobs.py"
+        },
+        "/shared/shared/bulk_outcomes.py": {
+          "sha256": "93caefb8f8b30c1758bbacf0b77b74337d24785f46c49cee0e27749f03a8264d",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/bulk_outcomes.py"
+        },
+        "/shared/shared/camera_profiles.py": {
+          "sha256": "8faa8dd8652baec3ed82e59f78ba03ada9af5f42f12c96fb50003ce5853b928b",
+          "source": "shared/shared/camera_profiles.py"
+        },
+        "/shared/shared/camera_status.py": {
+          "sha256": "e5265f37e2b6754e4c1cccb54da3e0d4ef6c1e0ff283fd400ed68b3de3d48f92",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/camera_status.py"
+        },
+        "/shared/shared/classification_models.py": {
+          "sha256": "dcd0ed7cf6eec6e132da75360914c613d566526ec223026a95922bfc5c248b71",
+          "source": "shared/shared/classification_models.py"
+        },
+        "/shared/shared/classification_threshold.py": {
+          "sha256": "d7d63e28718e5e09317964394bbd292794ffe4fab238bf285e21342ecd86fe47",
+          "source": "shared/shared/classification_threshold.py"
+        },
+        "/shared/shared/config.py": {
+          "sha256": "9a4adad20004530ac9f031e37fdca55a248791acc928544f3389528bc0348562",
+          "source": "shared/shared/config.py"
+        },
+        "/shared/shared/database.py": {
+          "sha256": "cd8abff1b240fe309cd4de579f5c9b8f87fc91572a0a1e4f125176a974450cbe",
+          "source": "shared/shared/database.py"
+        },
+        "/shared/shared/deployments.py": {
+          "sha256": "78d478148ae21b774fd4e4c62dbef35fcfc458ca753c930161e104e4416ad10c",
+          "source": "shared/shared/deployments.py"
+        },
+        "/shared/shared/device.py": {
+          "sha256": "4b302273f512f4a333af64b950f39a0cd18383bcfe48d1790c5138831e2e6aff",
+          "source": "shared/shared/device.py"
+        },
+        "/shared/shared/earthranger.py": {
+          "sha256": "a5f0e147534e6550bb4a59d5432dd2e0fa463876ad560ff568d367c9a585def5",
+          "source": "shared/shared/earthranger.py"
+        },
+        "/shared/shared/email_renderer.py": {
+          "sha256": "5476568034dec5e4964bb3dce8c5760eba62f25c6cae91efa93504681f2827de",
+          "source": "shared/shared/email_renderer.py"
+        },
+        "/shared/shared/geo.py": {
+          "sha256": "d06115a202c728091fddae436cb3a0f3506bf9819a6ed7bef4744d7b53cf607d",
+          "source": "shared/shared/geo.py"
+        },
+        "/shared/shared/health_probe.py": {
+          "sha256": "43a85ffd8ddd2ad8b3b20e80ec6fa442dbe5c041deea0bce92c87361a3de50b5",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/health_probe.py"
+        },
+        "/shared/shared/independence_filter.py": {
+          "sha256": "4267ae1a88381caf946e71348059a8a90d87a21eca262a23d19bb239a3e89d60",
+          "source": "shared/shared/independence_filter.py"
+        },
+        "/shared/shared/label_source.py": {
+          "sha256": "b71ed937f4f9edf0299d6472e3a5842e214d5a2a53b940ea1b3bd57fa64e6c48",
+          "source": "shared/shared/label_source.py"
+        },
+        "/shared/shared/logger.py": {
+          "sha256": "9eab34cca58b9c08899d0b18390f91e48b65facdb1332d5f94f5028614cd5b98",
+          "source": "shared/shared/logger.py"
+        },
+        "/shared/shared/models.py": {
+          "sha256": "488f2073a67c08d3ca365444e711c0a28c7d07bd5e085a4d9e97a007b7bdc129",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/models.py"
+        },
+        "/shared/shared/notify_guard.py": {
+          "sha256": "524a1caad47f39f5cebf8a3931ac1179b3042547f4d37211d5b3e735b5decb56",
+          "source": "shared/shared/notify_guard.py"
+        },
+        "/shared/shared/pipeline_recovery.py": {
+          "sha256": "9a91dfe6a10f764d8322fb6f016f6a8b92648ad170b5fb340ab6fb58e5cffb98",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/pipeline_recovery.py"
+        },
+        "/shared/shared/project_channels.py": {
+          "sha256": "55d7bfdb27833fd2f28c0a836149cb23b9e67482962037ee77dae905c4a0e296",
+          "source": "shared/shared/project_channels.py"
+        },
+        "/shared/shared/queue.py": {
+          "sha256": "d2e176bd879527e73c3791c1a588b95c28ef2f6bc987dd1ddd5eb50aea42906f",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/queue.py"
+        },
+        "/shared/shared/sensingclues.py": {
+          "sha256": "97fe211d6c23981aa2da84920d4af08f27110d08bfcb996600386bcdbb018e61",
+          "source": "shared/shared/sensingclues.py"
+        },
+        "/shared/shared/species.py": {
+          "sha256": "d21dd97ed1020ab6c6e42f9cca115428d93256d4cfe0a71f2f05e32c17dec357",
+          "source": "shared/shared/species.py"
+        },
+        "/shared/shared/storage.py": {
+          "sha256": "21585867bea3a1308e2a0131d1820b16d12fb30bbe2b68db2f002ded0132001c",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/storage.py"
+        },
+        "/shared/shared/taxonomy.py": {
+          "sha256": "2affa1faf8e2f48565d2eb4c3db3a13105b1249830e28e1b7d4fcbe25b4ed6af",
+          "source": "shared/shared/taxonomy.py"
+        },
+        "/shared/shared/templates/base_email.html": {
+          "sha256": "437b7bbd749335018a7962eb4e127ffd6e8fb2a21acbf5dd37375ea3a9b3f578",
+          "source": "shared/shared/templates/base_email.html"
+        },
+        "/shared/shared/templates/camera_alert.html": {
+          "sha256": "e9ff01eafc1c88c248fb067f23398179c1282ace8ca64e7b7b1cbf40b3bc43d7",
+          "source": "shared/shared/templates/camera_alert.html"
+        },
+        "/shared/shared/templates/detection_alert.html": {
+          "sha256": "8a5354c5401ca2c147b013bfa0d853e56618ecd6e700cd666a65a5b862a2c005",
+          "source": "shared/shared/templates/detection_alert.html"
+        },
+        "/shared/shared/templates/disk_usage_alert.html": {
+          "sha256": "0534ae1376d1463faa5ff481c79a5ff7f079d81a640441472c9c4b6983faae38",
+          "source": "shared/shared/templates/disk_usage_alert.html"
+        },
+        "/shared/shared/templates/email_report.html": {
+          "sha256": "99f1b3665b37204243762493ba7eebb5d715c49331cc138ce71041fbb5e5e22f",
+          "source": "shared/shared/templates/email_report.html"
+        },
+        "/shared/shared/templates/email_verification.html": {
+          "sha256": "1e99bcd7a09b4af56e974c30567dc317db9434f8a6c28d813b4b2af64918f3dc",
+          "source": "shared/shared/templates/email_verification.html"
+        },
+        "/shared/shared/templates/excessive_images_alert.html": {
+          "sha256": "98694f85ec56673765e2cff070287f769ae84c9cf7946e878757bb4e9b3769c1",
+          "source": "shared/shared/templates/excessive_images_alert.html"
+        },
+        "/shared/shared/templates/infra_alert.html": {
+          "sha256": "9e6f6e5d3f227912be3f4583952d43512438ffd93fbf64dd5ab5861e900f45d6",
+          "source": "shared/shared/templates/infra_alert.html"
+        },
+        "/shared/shared/templates/password_reset.html": {
+          "sha256": "37e08d50e745c40fe99fb8f6aa0852dc57d5d786e3196bd3793259439f693c00",
+          "source": "shared/shared/templates/password_reset.html"
+        },
+        "/shared/shared/templates/project_assignment.html": {
+          "sha256": "2bb9c3b163b4b401efc68192f17ed0e607ed9a79df57c1cf03dd9a1110cbe9e0",
+          "source": "shared/shared/templates/project_assignment.html"
+        },
+        "/shared/shared/templates/project_inactivity_alert.html": {
+          "sha256": "d6f306a21cc2971d35f504a8d7c69cdc0cc2aa34ae24cf7e2cdeb223d5545293",
+          "source": "shared/shared/templates/project_inactivity_alert.html"
+        },
+        "/shared/shared/templates/project_invitation.html": {
+          "sha256": "48b29b658404e1c777d63dcc7a6b742cc710fa9df9343363fb50c42deed8fcb5",
+          "source": "shared/shared/templates/project_invitation.html"
+        },
+        "/shared/shared/templates/project_reminder.html": {
+          "sha256": "c3d4a9c938fe44e4918e390f43dd3aea5ad2f00b313c860fae80bc80ced303cc",
+          "source": "shared/shared/templates/project_reminder.html"
+        },
+        "/shared/shared/templates/project_role_change.html": {
+          "sha256": "8e096547df9e07d988dea37acd6f074fb74a7b0b2dd5282f6dad8214b8249ec5",
+          "source": "shared/shared/templates/project_role_change.html"
+        },
+        "/shared/shared/templates/scheduled_species_report.html": {
+          "sha256": "978b8171853478f63dd84026b7248ea29712430a1c0022d066ad923da4375e60",
+          "source": "shared/shared/templates/scheduled_species_report.html"
+        },
+        "/shared/shared/templates/server_admin_invitation.html": {
+          "sha256": "eb75042d9baf2c16e52f33cda1b8bf03481b2e326d4212dc019fb38b6ecacb8c",
+          "source": "shared/shared/templates/server_admin_invitation.html"
+        },
+        "/shared/shared/templates/server_admin_promotion.html": {
+          "sha256": "03ca6fcd5c16660d3061fac341893f6083030f08f292d9dddfbeb0c911d55f33",
+          "source": "shared/shared/templates/server_admin_promotion.html"
+        },
+        "/shared/shared/templates/service_tasks_assigned.html": {
+          "sha256": "4fcaf3f15fb365866f1e6b374e4f0e938fef1aabbbd4cad9a91d88f9f93a8b6f",
+          "source": "shared/shared/templates/service_tasks_assigned.html"
+        },
+        "/shared/shared/templates/sim_expiry_alert.html": {
+          "sha256": "a835cb480fe4daaf6311e75e7f2c2dbb4dd796fe50f891a2e7cb92844ac77c52",
+          "source": "shared/shared/templates/sim_expiry_alert.html"
+        },
+        "/shared/shared/templates/theft_watch_person.html": {
+          "sha256": "1535ebe12ea8fd4d40d9074b6915237a76cdcd8eba34f84d741a1aa4f2e2ea39",
+          "source": "shared/shared/templates/theft_watch_person.html"
+        },
+        "/shared/shared/templates/theft_watch_silence.html": {
+          "sha256": "5bc061c68134ea2c1ed401cf5cb6b65e68d0a5f5bdcd4d86f621275a7b589c40",
+          "source": "shared/shared/templates/theft_watch_silence.html"
+        },
+        "/shared/shared/timestamps.py": {
+          "sha256": "353774cbccb5fad20b87b472fcddad2fefbfe7832bce0aef8cf9d7ad416404c3",
+          "source": "shared/shared/timestamps.py"
+        }
+      },
+      "image_id": "286fdc40f2d0bc5aeb33f0ad263fcd9bdc3ea45342bef562844ea3cf47c4af21",
+      "image_name": "localhost/addax-detection-libc-repair:20261019"
+    },
+    "addax-pilot-frontend": {
+      "asset_hashes": {
+        "/usr/share/nginx/html/50x.html": "876766b4e80133fd490603e073d3567425b88794828a9292104244c9e40875ed",
+        "/usr/share/nginx/html/apple-touch-icon-180x180.png": "3c2b8ffb3d6909be8fd246bf0e1432188a4f887b4315591ef83b4134f55e2bfd",
+        "/usr/share/nginx/html/assets/MapLibreGLLayer-CKRTiAqP.css": "a44e9c8519685a73587bcb465401eade1c3491d382c22243373c1c42b766f186",
+        "/usr/share/nginx/html/assets/MapLibreGLLayer-Dm0awCOK.js": "701a20ad8246d992cc451a8541a4fcffeb1be0184dc02e48c47cc24abb09246e",
+        "/usr/share/nginx/html/assets/bulkScanWorker-BfiwERG4.js": "df9cfb5b14b9d5bb13f8fa9cad1b1eb5aef1952e4bbb21f9b15b4dd96d7e17fe",
+        "/usr/share/nginx/html/assets/index-QIMojfvF.js": "d1497849033954ca9aa19da09bb889689d5cd567959bc9037810bab1b1996ffd",
+        "/usr/share/nginx/html/assets/index-ilv500jW.css": "9310f4b962ee169df020a7cc9fe25cea988a62a0bb84976cd4b6d074a5da7ef9",
+        "/usr/share/nginx/html/assets/maplibre-gl-worker-DsvDs_fr.js": "291cdeadf73d0eec1467427d6c43267ae3b440d7b9dd6c60312358253d5fb93d",
+        "/usr/share/nginx/html/auth-background.webp": "d2a7774ece802cd68ac1870dd2eb7beb59bf515fd3637d16809cd4fe108344bf",
+        "/usr/share/nginx/html/icon-192.png": "75a3d7cc4c6974af594db1b1531188cd20722ceacd34103f423e868a0bc1398a",
+        "/usr/share/nginx/html/icon-512.png": "96faa6ed036ee596b1d73049469c118d56069e93fe830c81a20f0ad9ea6cc9b8",
+        "/usr/share/nginx/html/index.html": "1629936485deb3068fb072cf6f11684c8af78db855c374c327d2eb9212543dae",
+        "/usr/share/nginx/html/integrations/earthranger-logo.svg": "735263cc946765fa9275f931d91f621c6a6ce0c26bb5fa931da221d7769f7c39",
+        "/usr/share/nginx/html/integrations/sensingclues-logo.svg": "3b3be73f356f4389aa7be03e529720bf42879211f0355df4975238078b7e9cb1",
+        "/usr/share/nginx/html/logo-square-no-text.png": "40cd7a58dacbf6673ef50fa5e9c4b2df24ea33ac64f70861f39a3e73c592bcc5",
+        "/usr/share/nginx/html/logo-wide.png": "647464f449cf9143cda08721ac3dee3d803d7e854f4b1c14fdccac9f8ef63e47",
+        "/usr/share/nginx/html/manifest.json": "88e665d9b7304143de3d5af720f85d6955f11db3bd4a1292675900caa4868a53",
+        "/usr/share/nginx/html/splash/splash-1125x2436.png": "1b5092b1dff4f439eb66d3fa5bef88e1063623b1c1280fada4bfcf403c5fb98e",
+        "/usr/share/nginx/html/splash/splash-1170x2532.png": "7ee1e78baaf4f58c14697f2c6c9fb6cbad4adb9168d73f3acb852cd61907479f",
+        "/usr/share/nginx/html/splash/splash-1179x2556.png": "c6173a455b5ea244ac24eca0dc0f864457625e0c40b4043db536b2b4e9fdaf1d",
+        "/usr/share/nginx/html/splash/splash-1206x2622.png": "ff863c7343e5cada0d655c8200640ca9dccc620f8277ac7a38100c1dcacb0496",
+        "/usr/share/nginx/html/splash/splash-1242x2688.png": "5ddaa6fccaacf294f6ddb2a160a0282ac5a0133b5d851dccab4505e456d1b006",
+        "/usr/share/nginx/html/splash/splash-1284x2778.png": "298d4ec5d5a34db9a315fc427691692997e6d299f00270ec335e92b72b57474e",
+        "/usr/share/nginx/html/splash/splash-1290x2796.png": "ffbf57309d5b1f92ae520fbd1582a337a18d7e6632308769fa7cc56b08c41905",
+        "/usr/share/nginx/html/splash/splash-1320x2868.png": "e087cc37822ade0b9b74da17fdfee814411b388b1d087c088276940d28df63e6",
+        "/usr/share/nginx/html/splash/splash-1488x2266.png": "584b68f51e78bf888280f978a6aaa4bd2d681ffc8b3f4723abd2a1f660b355fd",
+        "/usr/share/nginx/html/splash/splash-1536x2048.png": "c64adc4e947206c5584566624e41e90aab931881f946f06409849f43f6bed2ae",
+        "/usr/share/nginx/html/splash/splash-1620x2160.png": "36ef58e47b22c5a78772d7794c56d131844ac79de6a6f0a553d33b257c40e6e4",
+        "/usr/share/nginx/html/splash/splash-1640x2360.png": "54e046dab8c2b80669c98cc2ba8460472913824500f337a10c5a44626b3cb4a9",
+        "/usr/share/nginx/html/splash/splash-1668x2224.png": "bc62d40fc45abe245fa7548cc83b8b51be95ef8cf8a1f824bd62297d1b04cd3d",
+        "/usr/share/nginx/html/splash/splash-1668x2388.png": "a2b48a2c64c70534de9a779898f1780a6b13208217bf4f33811d6a09974a6db5",
+        "/usr/share/nginx/html/splash/splash-2048x1536.png": "33eacb7b9020f7fe813205653b001f3d748e3ca0116d5dfd605d192da3ac8024",
+        "/usr/share/nginx/html/splash/splash-2048x2732.png": "1c4fb953355829fd8aa8014f0c91ba5eb9b210eebcffb0b3d3171e63e534bb15",
+        "/usr/share/nginx/html/splash/splash-2160x1620.png": "9b63e375759d24d61db70a107ec23d615f6baeaf56522bbcef66b09292efb4f4",
+        "/usr/share/nginx/html/splash/splash-2224x1668.png": "85e2f2f822c42d6cc174ff438c868da54ce6eb9c0cda6a3b81c4fde6e4e356b1",
+        "/usr/share/nginx/html/splash/splash-2266x1488.png": "100df5ccd225516b110cc6ada15525a69febb1558e15d6e42dd4e7ac0e60f3ea",
+        "/usr/share/nginx/html/splash/splash-2360x1640.png": "c194738d98d32008bbe66c335ce1a2b8bd320dcb23bca3ac80295b9c0f9bd3c5",
+        "/usr/share/nginx/html/splash/splash-2388x1668.png": "a10ce4cf9fc1cf4db347f5e3234aaded509186f778cceb8a2e267ba63657a96a",
+        "/usr/share/nginx/html/splash/splash-2732x2048.png": "f330fdc64a5e4855598c4b530cae327346d0273c76378273548e76cc823c8dc0",
+        "/usr/share/nginx/html/splash/splash-750x1334.png": "b79d217bd0368860c9ccbf315d7e37de01e0aee0f440415200590c6a99e1db0e",
+        "/usr/share/nginx/html/splash/splash-828x1792.png": "24a2736076786bbea0bd8cac2c5c3d0eb37b6c69ca367c74914956aecb39116e",
+        "/usr/share/nginx/html/sw.js": "e13fe0c0f01bea728246b7929290c557688df7d3c05f9e41967b5433180fdedf"
+      },
+      "files": {},
+      "image_id": "3e5dd6dc1c62f6bf07d6cb023413ee86c82c65e398d3c3b4df6e411395442a4e",
+      "image_name": "localhost/trailcam-connect-frontend:v016-arm64-20261015",
+      "verification": "running image matches recorded v0.16 cutover; compiled asset hashes recorded, no frontend source extracted"
+    },
+    "addax-pilot-speciesnet": {
+      "files": {
+        "/app/Dockerfile": {
+          "sha256": "dcd589daaf83e095747068098403f013e6fe175ebf05f738cfebc80f6fd8814b",
+          "source": "services/classification-speciesnet/Dockerfile"
+        },
+        "/app/annotated_image.py": {
+          "sha256": "38b9f60564d29e340ed111ba2acdafd814c5908f85c4d5ce4686716ccca4da46",
+          "source": "services/classification-speciesnet/annotated_image.py"
+        },
+        "/app/classifier.py": {
+          "sha256": "2050cc60715f612bbfd9acd75c36a3b9c29d9c6161ef1d017d13a7d6d8312eea",
+          "source": "services/classification-speciesnet/classifier.py"
+        },
+        "/app/config.py": {
+          "sha256": "7138d0f3b782d9fcab052be71700b316bcdbc820a98ed3f315c92137e4feca57",
+          "source": "services/classification-speciesnet/config.py"
+        },
+        "/app/db_operations.py": {
+          "sha256": "49682eea43418d6c7125430fefaf8991262263ed6a6b2a7cc3a384846a703405",
+          "source": "services/classification-speciesnet/db_operations.py"
+        },
+        "/app/model_loader.py": {
+          "sha256": "e970982d40ab23c4b90081ff9e285820d2626fa8f832702d1a12707688d683cf",
+          "source": "services/classification-speciesnet/model_loader.py"
+        },
+        "/app/requirements.txt": {
+          "sha256": "a3ec479aa6e28300fa56ebaceca2bd6f6b33b417181dfc7939831aafa3f4865f",
+          "source": "services/classification-speciesnet/requirements.txt"
+        },
+        "/app/storage_operations.py": {
+          "sha256": "94a36aec76253623292065971df5eb0cbca7b781749faae7b3ce491bc6f05785",
+          "source": "services/classification-speciesnet/storage_operations.py"
+        },
+        "/app/worker.py": {
+          "sha256": "94a8904958477ddfd0a1295715a5985ad1b19b953815689d8a7e1ff5aad915a2",
+          "source": "services/classification-speciesnet/worker.py"
+        },
+        "/shared/pyproject.toml": {
+          "sha256": "7c27ee4f81c42b3cfc01844d55bdc1beb3492ff1da912de3be8027bea48ebd08",
+          "source": "shared/pyproject.toml"
+        },
+        "/shared/shared/__init__.py": {
+          "sha256": "050823ac2828924f9f87d0670b48ad91052199ef445b8e8bdf019ea5f5e74f1c",
+          "source": "shared/shared/__init__.py"
+        },
+        "/shared/shared/bulk_jobs.py": {
+          "sha256": "3e9a6dfd4246e103c28caaf64820003b1b005bb47387a134c25647f8b8d849b1",
+          "source": "shared/shared/bulk_jobs.py"
+        },
+        "/shared/shared/bulk_outcomes.py": {
+          "sha256": "93caefb8f8b30c1758bbacf0b77b74337d24785f46c49cee0e27749f03a8264d",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/bulk_outcomes.py"
+        },
+        "/shared/shared/camera_profiles.py": {
+          "sha256": "8faa8dd8652baec3ed82e59f78ba03ada9af5f42f12c96fb50003ce5853b928b",
+          "source": "shared/shared/camera_profiles.py"
+        },
+        "/shared/shared/camera_status.py": {
+          "sha256": "e5265f37e2b6754e4c1cccb54da3e0d4ef6c1e0ff283fd400ed68b3de3d48f92",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/camera_status.py"
+        },
+        "/shared/shared/classification_models.py": {
+          "sha256": "dcd0ed7cf6eec6e132da75360914c613d566526ec223026a95922bfc5c248b71",
+          "source": "shared/shared/classification_models.py"
+        },
+        "/shared/shared/classification_threshold.py": {
+          "sha256": "d7d63e28718e5e09317964394bbd292794ffe4fab238bf285e21342ecd86fe47",
+          "source": "shared/shared/classification_threshold.py"
+        },
+        "/shared/shared/config.py": {
+          "sha256": "9a4adad20004530ac9f031e37fdca55a248791acc928544f3389528bc0348562",
+          "source": "shared/shared/config.py"
+        },
+        "/shared/shared/database.py": {
+          "sha256": "cd8abff1b240fe309cd4de579f5c9b8f87fc91572a0a1e4f125176a974450cbe",
+          "source": "shared/shared/database.py"
+        },
+        "/shared/shared/deployments.py": {
+          "sha256": "78d478148ae21b774fd4e4c62dbef35fcfc458ca753c930161e104e4416ad10c",
+          "source": "shared/shared/deployments.py"
+        },
+        "/shared/shared/device.py": {
+          "sha256": "4b302273f512f4a333af64b950f39a0cd18383bcfe48d1790c5138831e2e6aff",
+          "source": "shared/shared/device.py"
+        },
+        "/shared/shared/earthranger.py": {
+          "sha256": "a5f0e147534e6550bb4a59d5432dd2e0fa463876ad560ff568d367c9a585def5",
+          "source": "shared/shared/earthranger.py"
+        },
+        "/shared/shared/email_renderer.py": {
+          "sha256": "5476568034dec5e4964bb3dce8c5760eba62f25c6cae91efa93504681f2827de",
+          "source": "shared/shared/email_renderer.py"
+        },
+        "/shared/shared/geo.py": {
+          "sha256": "d06115a202c728091fddae436cb3a0f3506bf9819a6ed7bef4744d7b53cf607d",
+          "source": "shared/shared/geo.py"
+        },
+        "/shared/shared/health_probe.py": {
+          "sha256": "43a85ffd8ddd2ad8b3b20e80ec6fa442dbe5c041deea0bce92c87361a3de50b5",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/health_probe.py"
+        },
+        "/shared/shared/independence_filter.py": {
+          "sha256": "4267ae1a88381caf946e71348059a8a90d87a21eca262a23d19bb239a3e89d60",
+          "source": "shared/shared/independence_filter.py"
+        },
+        "/shared/shared/label_source.py": {
+          "sha256": "b71ed937f4f9edf0299d6472e3a5842e214d5a2a53b940ea1b3bd57fa64e6c48",
+          "source": "shared/shared/label_source.py"
+        },
+        "/shared/shared/logger.py": {
+          "sha256": "9eab34cca58b9c08899d0b18390f91e48b65facdb1332d5f94f5028614cd5b98",
+          "source": "shared/shared/logger.py"
+        },
+        "/shared/shared/models.py": {
+          "sha256": "488f2073a67c08d3ca365444e711c0a28c7d07bd5e085a4d9e97a007b7bdc129",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/models.py"
+        },
+        "/shared/shared/notify_guard.py": {
+          "sha256": "524a1caad47f39f5cebf8a3931ac1179b3042547f4d37211d5b3e735b5decb56",
+          "source": "shared/shared/notify_guard.py"
+        },
+        "/shared/shared/pipeline_recovery.py": {
+          "sha256": "9a91dfe6a10f764d8322fb6f016f6a8b92648ad170b5fb340ab6fb58e5cffb98",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/pipeline_recovery.py"
+        },
+        "/shared/shared/project_channels.py": {
+          "sha256": "55d7bfdb27833fd2f28c0a836149cb23b9e67482962037ee77dae905c4a0e296",
+          "source": "shared/shared/project_channels.py"
+        },
+        "/shared/shared/queue.py": {
+          "sha256": "d2e176bd879527e73c3791c1a588b95c28ef2f6bc987dd1ddd5eb50aea42906f",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/queue.py"
+        },
+        "/shared/shared/sensingclues.py": {
+          "sha256": "97fe211d6c23981aa2da84920d4af08f27110d08bfcb996600386bcdbb018e61",
+          "source": "shared/shared/sensingclues.py"
+        },
+        "/shared/shared/species.py": {
+          "sha256": "d21dd97ed1020ab6c6e42f9cca115428d93256d4cfe0a71f2f05e32c17dec357",
+          "source": "shared/shared/species.py"
+        },
+        "/shared/shared/storage.py": {
+          "sha256": "21585867bea3a1308e2a0131d1820b16d12fb30bbe2b68db2f002ded0132001c",
+          "source": "deployment/deployed-baseline/overlays/worker-common/shared/shared/storage.py"
+        },
+        "/shared/shared/taxonomy.py": {
+          "sha256": "2affa1faf8e2f48565d2eb4c3db3a13105b1249830e28e1b7d4fcbe25b4ed6af",
+          "source": "shared/shared/taxonomy.py"
+        },
+        "/shared/shared/templates/base_email.html": {
+          "sha256": "437b7bbd749335018a7962eb4e127ffd6e8fb2a21acbf5dd37375ea3a9b3f578",
+          "source": "shared/shared/templates/base_email.html"
+        },
+        "/shared/shared/templates/camera_alert.html": {
+          "sha256": "e9ff01eafc1c88c248fb067f23398179c1282ace8ca64e7b7b1cbf40b3bc43d7",
+          "source": "shared/shared/templates/camera_alert.html"
+        },
+        "/shared/shared/templates/detection_alert.html": {
+          "sha256": "8a5354c5401ca2c147b013bfa0d853e56618ecd6e700cd666a65a5b862a2c005",
+          "source": "shared/shared/templates/detection_alert.html"
+        },
+        "/shared/shared/templates/disk_usage_alert.html": {
+          "sha256": "0534ae1376d1463faa5ff481c79a5ff7f079d81a640441472c9c4b6983faae38",
+          "source": "shared/shared/templates/disk_usage_alert.html"
+        },
+        "/shared/shared/templates/email_report.html": {
+          "sha256": "99f1b3665b37204243762493ba7eebb5d715c49331cc138ce71041fbb5e5e22f",
+          "source": "shared/shared/templates/email_report.html"
+        },
+        "/shared/shared/templates/email_verification.html": {
+          "sha256": "1e99bcd7a09b4af56e974c30567dc317db9434f8a6c28d813b4b2af64918f3dc",
+          "source": "shared/shared/templates/email_verification.html"
+        },
+        "/shared/shared/templates/excessive_images_alert.html": {
+          "sha256": "98694f85ec56673765e2cff070287f769ae84c9cf7946e878757bb4e9b3769c1",
+          "source": "shared/shared/templates/excessive_images_alert.html"
+        },
+        "/shared/shared/templates/infra_alert.html": {
+          "sha256": "9e6f6e5d3f227912be3f4583952d43512438ffd93fbf64dd5ab5861e900f45d6",
+          "source": "shared/shared/templates/infra_alert.html"
+        },
+        "/shared/shared/templates/password_reset.html": {
+          "sha256": "37e08d50e745c40fe99fb8f6aa0852dc57d5d786e3196bd3793259439f693c00",
+          "source": "shared/shared/templates/password_reset.html"
+        },
+        "/shared/shared/templates/project_assignment.html": {
+          "sha256": "2bb9c3b163b4b401efc68192f17ed0e607ed9a79df57c1cf03dd9a1110cbe9e0",
+          "source": "shared/shared/templates/project_assignment.html"
+        },
+        "/shared/shared/templates/project_inactivity_alert.html": {
+          "sha256": "d6f306a21cc2971d35f504a8d7c69cdc0cc2aa34ae24cf7e2cdeb223d5545293",
+          "source": "shared/shared/templates/project_inactivity_alert.html"
+        },
+        "/shared/shared/templates/project_invitation.html": {
+          "sha256": "48b29b658404e1c777d63dcc7a6b742cc710fa9df9343363fb50c42deed8fcb5",
+          "source": "shared/shared/templates/project_invitation.html"
+        },
+        "/shared/shared/templates/project_reminder.html": {
+          "sha256": "c3d4a9c938fe44e4918e390f43dd3aea5ad2f00b313c860fae80bc80ced303cc",
+          "source": "shared/shared/templates/project_reminder.html"
+        },
+        "/shared/shared/templates/project_role_change.html": {
+          "sha256": "8e096547df9e07d988dea37acd6f074fb74a7b0b2dd5282f6dad8214b8249ec5",
+          "source": "shared/shared/templates/project_role_change.html"
+        },
+        "/shared/shared/templates/scheduled_species_report.html": {
+          "sha256": "978b8171853478f63dd84026b7248ea29712430a1c0022d066ad923da4375e60",
+          "source": "shared/shared/templates/scheduled_species_report.html"
+        },
+        "/shared/shared/templates/server_admin_invitation.html": {
+          "sha256": "eb75042d9baf2c16e52f33cda1b8bf03481b2e326d4212dc019fb38b6ecacb8c",
+          "source": "shared/shared/templates/server_admin_invitation.html"
+        },
+        "/shared/shared/templates/server_admin_promotion.html": {
+          "sha256": "03ca6fcd5c16660d3061fac341893f6083030f08f292d9dddfbeb0c911d55f33",
+          "source": "shared/shared/templates/server_admin_promotion.html"
+        },
+        "/shared/shared/templates/service_tasks_assigned.html": {
+          "sha256": "4fcaf3f15fb365866f1e6b374e4f0e938fef1aabbbd4cad9a91d88f9f93a8b6f",
+          "source": "shared/shared/templates/service_tasks_assigned.html"
+        },
+        "/shared/shared/templates/sim_expiry_alert.html": {
+          "sha256": "a835cb480fe4daaf6311e75e7f2c2dbb4dd796fe50f891a2e7cb92844ac77c52",
+          "source": "shared/shared/templates/sim_expiry_alert.html"
+        },
+        "/shared/shared/templates/theft_watch_person.html": {
+          "sha256": "1535ebe12ea8fd4d40d9074b6915237a76cdcd8eba34f84d741a1aa4f2e2ea39",
+          "source": "shared/shared/templates/theft_watch_person.html"
+        },
+        "/shared/shared/templates/theft_watch_silence.html": {
+          "sha256": "5bc061c68134ea2c1ed401cf5cb6b65e68d0a5f5bdcd4d86f621275a7b589c40",
+          "source": "shared/shared/templates/theft_watch_silence.html"
+        },
+        "/shared/shared/timestamps.py": {
+          "sha256": "353774cbccb5fad20b87b472fcddad2fefbfe7832bce0aef8cf9d7ad416404c3",
+          "source": "shared/shared/timestamps.py"
+        }
+      },
+      "image_id": "2ab6cf4f7a3eaaefdaebf8d85768dd23de3e9ce210536301f637bcb8a15f3977",
+      "image_name": "localhost/addax-speciesnet-libc-repair:20261019"
+    }
+  },
+  "excluded_worker_shared_files": [
+    "shared/shared/privacy.py"
+  ],
+  "observed_date": "2026-11-17",
+  "schema": 1,
+  "upstream_commit": "5eded40f2ad1de7495520982be232f806827db5f",
+  "upstream_tag": "v0.16.0"
+}

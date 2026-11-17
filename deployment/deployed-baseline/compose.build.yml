@@ -1,0 +1,10 @@
+services:
+  bulk-upload:
+    build:
+      dockerfile: deployment/deployed-baseline/bulk-upload.Containerfile
+  detection:
+    build:
+      dockerfile: deployment/deployed-baseline/detection.Containerfile
+  classification-speciesnet:
+    build:
+      dockerfile: deployment/deployed-baseline/classification-speciesnet.Containerfile

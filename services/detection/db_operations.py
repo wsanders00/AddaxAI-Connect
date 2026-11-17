@@ -8,12 +8,13 @@ from sqlalchemy.orm import Session
 from shared.database import get_db_session
 from shared.models import Image, Detection as DetectionModel
 from shared.logger import get_logger
+from shared.pipeline_recovery import set_pipeline_status
 from detector import Detection
 
 logger = get_logger("detection.db_operations")
 
 
-def update_image_status(image_uuid: str, status: str) -> None:
+def update_image_status(image_uuid: str, status: str, claim_id: str) -> None:
     """
     Update image processing status.
 
@@ -27,16 +28,8 @@ def update_image_status(image_uuid: str, status: str) -> None:
     logger.info("Updating image status", image_uuid=image_uuid, status=status)
 
     try:
-        with get_db_session() as db:
-            image = db.query(Image).filter(Image.uuid == image_uuid).first()
-
-            if not image:
-                raise ValueError(f"Image not found: {image_uuid}")
-
-            image.status = status
-            db.commit()
-
-            logger.info("Image status updated", image_uuid=image_uuid, status=status)
+        set_pipeline_status(image_uuid, status, claim_id=claim_id)
+        logger.info("Image status updated", image_uuid=image_uuid, status=status)
 
     except Exception as e:
         logger.error(
@@ -51,7 +44,8 @@ def update_image_status(image_uuid: str, status: str) -> None:
 
 def insert_detections(
     image_uuid: str,
-    detections: list[Detection]
+    detections: list[Detection],
+    claim_id: str,
 ) -> list[int]:
     """
     Insert detection records into database.
@@ -75,10 +69,19 @@ def insert_detections(
     try:
         with get_db_session() as db:
             # Get image record
-            image = db.query(Image).filter(Image.uuid == image_uuid).first()
+            image = db.query(Image).filter(Image.uuid == image_uuid).with_for_update().first()
 
             if not image:
                 raise ValueError(f"Image not found: {image_uuid}")
+            if image.pipeline_claim_id != claim_id or image.status != "processing":
+                raise RuntimeError("Detection claim was lost before database write")
+
+            # A crash after the detection commit but before status/queue
+            # publication is recovered from these durable rows. Reuse them;
+            # never replace user-visible detection/verification state.
+            existing = db.query(DetectionModel).filter(DetectionModel.image_id == image.id).all()
+            if existing:
+                return [row.id for row in existing]
 
             # Insert detections
             detection_ids = []

@@ -1,4 +1,12 @@
 <p align="center">
+
+> **Fork baseline:** Local `development` is reconciled to the application sources
+> observed in production on November 17, 2026: upstream v0.16 API/frontend,
+> preserved database migrations, and separately versioned custom workers.
+> See [the deployed baseline](deployment/deployed-baseline/README.md) for the
+> active changes, exact image/source hashes, build profiles and verification limits.
+> The external trail-camera importer and infrastructure are maintained separately.
+
   <img src="docs/assets/logo-wide.png" width="40%" alt="AddaxAI Connect" />
 </p>
 

@@ -9,6 +9,12 @@ from tempfile import NamedTemporaryFile
 
 from shared.bulk_jobs import is_bulk_image_cancelled
 from shared.logger import get_logger, set_image_id
+from shared.pipeline_recovery import (
+    claim_image_stage,
+    fail_pipeline_stage,
+    maintain_image_lease,
+    reconcile_stale_images,
+)
 from shared.queue import (
     RedisQueue,
     QUEUE_IMAGE_INGESTED,
@@ -69,6 +75,29 @@ def process_image(message: dict, detector) -> None:
         logger.info("Skipping cancelled bulk image", image_uuid=image_uuid)
         return
 
+    # A repeated queue delivery after the detection commit only has to
+    # reconstruct the downstream message. Do not run inference twice.
+    from shared.database import get_db_session
+    from shared.models import Image, Detection as DetectionModel
+    persisted_detection_ids = []
+    with get_db_session() as db:
+        image = db.query(Image).filter(Image.uuid == image_uuid).first()
+        if not image:
+            raise ValueError(f"Image not found: {image_uuid}")
+        persisted_detection_ids = [
+            d.id for d in db.query(DetectionModel).filter(DetectionModel.image_id == image.id).all()
+        ]
+        if image.status in ("detected", "classifying", "classified"):
+            queue = RedisQueue(downstream_queue_name)
+            queue.publish({"image_uuid": image_uuid, "num_detections": len(persisted_detection_ids),
+                           "detection_ids": persisted_detection_ids, "origin": origin})
+            return
+
+    claim_id = claim_image_stage(image_uuid, "pending", "processing")
+    if not claim_id:
+        logger.info("Detection delivery already claimed or terminal", image_uuid=image_uuid)
+        return
+
     logger.info(
         "Processing image",
         image_uuid=image_uuid,
@@ -80,8 +109,23 @@ def process_image(message: dict, detector) -> None:
     temp_files = []
 
     try:
-        # Step 1: Update status to processing
-        update_image_status(image_uuid, "processing")
+        # Claim is durable before any expensive work; refresh while inference
+        # runs so a second worker cannot mistake a healthy lease as abandoned.
+        lease = maintain_image_lease(image_uuid, "processing", claim_id)
+        lease.__enter__()
+
+        # A stale lease may have been recovered after detections committed but
+        # before the status transition. Reuse those rows instead of inferring
+        # and inserting a second set.
+        if persisted_detection_ids:
+            update_image_status(image_uuid, "detected", claim_id)
+            RedisQueue(downstream_queue_name).publish({
+                "image_uuid": image_uuid,
+                "num_detections": len(persisted_detection_ids),
+                "detection_ids": persisted_detection_ids,
+                "origin": origin,
+            })
+            return
 
         # Step 2: Download image from MinIO
         image_path = download_image_from_minio(storage_path)
@@ -99,7 +143,7 @@ def process_image(message: dict, detector) -> None:
         # If no detections, update status and publish message
         if len(detections) == 0:
             logger.info("No detections found", image_uuid=image_uuid)
-            update_image_status(image_uuid, "detected")
+            update_image_status(image_uuid, "detected", claim_id)
 
             # Publish to next queue (classification will handle empty detections)
             queue = RedisQueue(downstream_queue_name)
@@ -114,10 +158,10 @@ def process_image(message: dict, detector) -> None:
             return
 
         # Step 4: Insert detections into database
-        detection_ids = insert_detections(image_uuid, detections)
+        detection_ids = insert_detections(image_uuid, detections, claim_id)
 
         # Step 5: Update image status to detected
-        update_image_status(image_uuid, "detected")
+        update_image_status(image_uuid, "detected", claim_id)
 
         # Step 6: Publish to detection-complete queue
         queue = RedisQueue(downstream_queue_name)
@@ -138,7 +182,7 @@ def process_image(message: dict, detector) -> None:
     except Exception as e:
         # Update status to failed
         try:
-            update_image_status(image_uuid, "failed")
+            fail_pipeline_stage(image_uuid, "processing", "detection", claim_id, e)
         except Exception as db_error:
             logger.error("Failed to update status to failed", error=str(db_error))
 
@@ -151,6 +195,8 @@ def process_image(message: dict, detector) -> None:
         raise
 
     finally:
+        if 'lease' in locals():
+            lease.__exit__(None, None, None)
         # Cleanup temporary files
         for temp_file in temp_files:
             try:
@@ -179,6 +225,7 @@ def main():
         priority_queues,
         lambda msg: process_image(msg, detector),
         heartbeat_key=HEARTBEAT_KEY_DETECTION,
+        maintenance_callback=lambda: reconcile_stale_images("detection"),
     )
 
 

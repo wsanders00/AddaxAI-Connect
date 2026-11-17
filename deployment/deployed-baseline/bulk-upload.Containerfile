@@ -1,0 +1,42 @@
+# Reconstructed application-source profile; see README.md for runtime limits.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Same system deps as ingestion: exiftool for EXIF, libmagic for MIME.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    exiftool \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir setuptools wheel
+
+# Service dependencies first, then the shared library. `COPY shared` used to
+# sit above this, so any change under shared/ threw away the cached dependency
+# layer and reinstalled everything from the network. Shared changes on nearly
+# every release; requirements.txt almost never does.
+COPY services/bulk-upload/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy and install the shared library
+COPY shared /shared
+COPY deployment/deployed-baseline/overlays/worker-common/shared /shared
+COPY deployment/deployed-baseline/overlays/bulk-upload/shared /shared
+RUN rm /shared/shared/privacy.py
+RUN pip install --no-cache-dir -e /shared
+
+# The installs above are separate pip commands, so pip only checks each one on
+# its own: a later install can downgrade what an earlier one needs, print an
+# ERROR line, and still exit 0. pip check turns that into a failed build.
+RUN pip check
+
+# Vendor the live ingestion service so the bulk worker can call its
+# validation, EXIF, MinIO write, and DB record helpers without
+# duplicating them. Mounted under /ingestion_lib and added to the
+# Python path inside worker.py.
+COPY services/ingestion /ingestion_lib
+COPY deployment/deployed-baseline/overlays/bulk-upload/ingestion /ingestion_lib
+
+COPY services/bulk-upload .
+
+CMD ["python", "worker.py"]

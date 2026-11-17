@@ -1,0 +1,1079 @@
+"""
+SQLAlchemy database models
+
+Defines the database schema for all tables.
+All services import models from this file to ensure consistency.
+"""
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, ForeignKey, Boolean, JSON, Text, UniqueConstraint
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from geoalchemy2 import Geography
+from datetime import datetime
+
+from .database import Base
+
+
+class Image(Base):
+    """Camera trap image"""
+    __tablename__ = "images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String(36), unique=True, nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    # Camera wall-clock reading at capture, stored naive. Interpret under ServerSettings.timezone.
+    captured_at = Column(DateTime(timezone=False), nullable=False, index=True)
+    storage_path = Column(String(512), nullable=False)
+    thumbnail_path = Column(String(512), nullable=True)  # Path to thumbnail in MinIO
+    status = Column(String(50), nullable=False, default="pending", index=True)
+    # Durable lease metadata for bounded recovery of Redis queue work. This is
+    # separate from ingested_at: ingestion time never changes as stages run.
+    pipeline_updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    pipeline_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    pipeline_error = Column(Text, nullable=True)
+    pipeline_failed_stage = Column(String(20), nullable=True)
+    pipeline_claim_id = Column(String(36), nullable=True)
+    image_metadata = Column(JSON)  # Renamed from 'metadata' to avoid SQLAlchemy reserved name
+
+    # Server wall-clock at ingestion (aware UTC). captured_at is the camera clock,
+    # which can be wrong at setup, so it is not a reliable arrival order. This is
+    # the chronological key for the Live feed and is directly comparable to
+    # Rejection.rejected_at. Filled automatically by server_default.
+    ingested_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    # Origin: 'live' for FTPS-ingested images, 'bulk' for SD-card uploads
+    # via the bulk-upload feature. Drives notification suppression so a
+    # bulk batch never fires species_detection alerts retroactively.
+    origin = Column(String(20), nullable=False, default='live', server_default='live', index=True)
+
+    # SHA-256 hex digest of raw image bytes. Used by bulk upload to skip
+    # re-imports of the same SD card. Nullable for FTPS-ingested rows
+    # which have no need for hashing.
+    content_hash = Column(String(64), nullable=True, index=True)
+
+    # Bulk upload provenance. Links each bulk-origin image back to the
+    # job that created it so the API can derive accurate end-to-end
+    # progress: a job is done when every image it created has finished
+    # detection + classification, not when the ZIP unpack completes.
+    bulk_upload_job_id = Column(
+        Integer,
+        ForeignKey("bulk_upload_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # Deployment provenance. Links each image to the deployment (a camera at a
+    # site for a time range) that was active when it was captured. Nullable:
+    # live ingestion sets it at write-time once Phase 2 lands, legacy rows and
+    # missing-GPS edge cases stay null. ON DELETE SET NULL.
+    deployment_id = Column(
+        Integer,
+        ForeignKey("deployments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # Visibility
+    is_hidden = Column(Boolean, nullable=False, default=False, server_default='false', index=True)
+
+    # Human verification fields
+    is_verified = Column(Boolean, nullable=False, default=False, index=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    verification_notes = Column(Text, nullable=True)
+
+    # Like / favorite (shared across the project)
+    is_liked = Column(Boolean, nullable=False, default=False, server_default='false', index=True)
+    liked_at = Column(DateTime(timezone=True), nullable=True)
+    liked_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Needs review (asks a colleague for a second pair of eyes)
+    needs_review = Column(Boolean, nullable=False, default=False, server_default='false', index=True)
+    needs_review_at = Column(DateTime(timezone=True), nullable=True)
+    needs_review_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # User-assigned flags for events of interest, e.g. ["infraction",
+    # "predation event"]. Normalized lowercase, same pattern as Site.tags
+    # and Camera.tags.
+    tags = Column(JSON, nullable=True)
+
+    # Relationships
+    camera = relationship("Camera", back_populates="images")
+    detections = relationship("Detection", back_populates="image", cascade="all, delete-orphan")
+    human_observations = relationship("HumanObservation", back_populates="image", cascade="all, delete-orphan")
+    verified_by = relationship("User", foreign_keys=[verified_by_user_id])
+    liked_by = relationship("User", foreign_keys=[liked_by_user_id])
+    needs_review_by = relationship("User", foreign_keys=[needs_review_by_user_id])
+
+
+class Camera(Base):
+    """Camera trap device"""
+    __tablename__ = "cameras"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # A camera has no friendly name; it is identified by device_id. Display
+    # labels derive from device_id (see camera_to_response).
+    installed_at = Column(DateTime(timezone=True), nullable=True)
+    config = Column(JSON)
+
+    # Identifiers
+    device_id = Column(String(50), nullable=True, index=True, unique=True)
+    manufacturer = Column(String(100), nullable=True, index=True)
+    model = Column(String(100), nullable=True, index=True)
+    hardware_revision = Column(String(50), nullable=True)
+
+    # Flexible key-value fields (replaces fixed serial_number, box, order, etc.)
+    custom_fields = Column(JSON, nullable=True)
+
+    # Project assignment
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    status = Column(String(50), nullable=False, server_default='inventory', index=True)
+
+    # Health metrics (from daily reports)
+    battery_percent = Column(Integer, nullable=True)
+    sd_used_mb = Column(Integer, nullable=True)
+    sd_total_mb = Column(Integer, nullable=True)
+    temperature_c = Column(Integer, nullable=True)
+    signal_quality = Column(Integer, nullable=True)
+
+    # SIM card expiry. Plain Date so the monthly cron can filter naturally and
+    # the camera form / CSV upload speak YYYY-MM-DD without timezone math.
+    sim_expiry_date = Column(Date, nullable=True)
+
+    # Metadata
+    tags = Column(JSON, nullable=True)
+    notes = Column(Text, nullable=True)
+    reference_image_path = Column(String(512), nullable=True)
+    reference_thumbnail_path = Column(String(512), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    # Relationships
+    images = relationship("Image", back_populates="camera")
+
+
+class CameraMaintenanceEvent(Base):
+    """
+    One maintenance visit to a camera.
+
+    Logged by project admins on the camera's Maintenance tab or via the
+    bulk action. event_date is a plain Date, field visits are day-granular
+    and need no timezone math (same reasoning as Camera.sim_expiry_date).
+    action_types holds a non-empty list from a fixed vocabulary, validated
+    by the API (see routers/service.py). The derived
+    max(event_date) per camera is shown as "last maintenance" in the
+    camera list, detail sheet, and export.
+    """
+    __tablename__ = "camera_maintenance_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_date = Column(Date, nullable=False, index=True)
+    # e.g. ["battery_change", "sd_card_swap"]
+    action_types = Column(JSON, nullable=False)
+    # Who did the field work. SET NULL so history survives a user delete.
+    performed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Who logged the event, distinct from who performed it.
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class CameraServiceTask(Base):
+    """
+    One planned service visit to a camera, open work only.
+
+    A row exists while the work is still to do. Completing it logs a
+    CameraMaintenanceEvent and deletes the row in one transaction, so the
+    service log stays the one history; cancelling deletes the row. There
+    is no status column: open is "the row exists", overdue is derived from
+    due_date against today in the server timezone. Same action vocabulary
+    as the service log (see routers/service.py).
+    """
+    __tablename__ = "camera_service_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    # e.g. ["vegetation_clearing"]
+    action_types = Column(JSON, nullable=False)
+    note = Column(Text, nullable=True)
+    # Optional deadline, a plain Date like event_date.
+    due_date = Column(Date, nullable=True, index=True)
+    # Optional, a member of the camera's project. SET NULL keeps the task
+    # when the user is deleted.
+    assigned_to_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SiteGroup(Base):
+    """Group of sites treated as one place for the independence interval.
+
+    Cameras at one site already pool automatically (the independence pool key
+    is the site). A site group is only for merging distinct sites, e.g. both
+    ends of a wildlife crossing. Shown in the UI as "Merged sites".
+    """
+    __tablename__ = "site_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    sites = relationship("Site", back_populates="site_group")
+
+    __table_args__ = (
+        UniqueConstraint('project_id', 'name', name='uq_site_group_project_name'),
+    )
+
+
+class Site(Base):
+    """
+    Physical place where one or more cameras are deployed.
+
+    Groups deployments that share the same location, so spatial queries and
+    the map aggregate by place instead of string-matching camera names.
+    Matches the Camtrap-DP / AddaxAI WebUI Site concept.
+    """
+    __tablename__ = "sites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String(36), unique=True, nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)  # user-editable, defaults to coords or "Site #N"
+    location = Column(Geography(geometry_type='POINT', srid=4326), nullable=False)
+    habitat_type = Column(String(100), nullable=True)  # Camtrap-DP "habitat" field
+    notes = Column(Text, nullable=True)
+    tags = Column(JSON, nullable=True)
+    # Optional "Merged sites" group. Sites in one group share an independence
+    # pool, for merging distinct places like both ends of a wildlife crossing.
+    site_group_id = Column(Integer, ForeignKey("site_groups.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    # Relationships
+    deployments = relationship("Deployment", back_populates="site")
+    site_group = relationship("SiteGroup", back_populates="sites")
+
+    __table_args__ = (
+        UniqueConstraint('project_id', 'name', name='uq_site_project_name'),
+    )
+
+
+class Deployment(Base):
+    """
+    Deployment: one camera at one place for a time range.
+
+    Renamed from CameraDeploymentPeriod. A new deployment is created when:
+    - Camera GPS moves more than SITE_THRESHOLD_METERS from previous location
+    - First image/report received for a camera
+
+    Used for:
+    - Effort-corrected detection rate calculations (trap-days)
+    - CamtrapDP export
+    - Camera relocation history
+
+    `site_id` links the deployment to a shared physical Site (nullable, legacy
+    rows and missing-GPS edge cases stay null). `deployment_number` is the
+    per-camera sequence (1, 2, 3...); it is not a foreign key. Deployments
+    carry no free-text metadata; the site name is the human-readable "where".
+    """
+    __tablename__ = "deployments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    deployment_number = Column(Integer, nullable=False)  # Sequence number per camera (1, 2, 3...)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True)
+    # 'auto' = site assigned by GPS clustering; 'manual' = a human assigned it.
+    # A label only (drives the GPS-guessed vs human-confirmed badge and filter
+    # on the Deployments page); it does not change ingestion behavior.
+    site_source = Column(String(16), nullable=False, server_default='auto')
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=True)  # NULL = currently active deployment
+    location = Column(Geography(geometry_type='POINT', srid=4326), nullable=False)
+    # How many GPS readings `location` averages. The pin is the running mean of
+    # the deployment's within-threshold photo readings (see shared.geo.
+    # next_mean_pin), so it converges on the true spot instead of staying
+    # anchored on the first fix. Starts at 1 (the creation reading).
+    gps_reading_count = Column(Integer, nullable=False, server_default='1')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    # Relationships
+    site = relationship("Site", back_populates="deployments")
+
+
+class CameraHealthReport(Base):
+    """
+    Historical camera health reports from daily status messages.
+
+    Each daily report is stored as a separate row, enabling time-series
+    analysis of battery, signal, temperature, SD utilization, and image counts.
+
+    Used for:
+    - Debugging camera issues over time
+    - Visualizing health trends in charts
+    - Identifying patterns (e.g., battery drain, signal loss)
+    """
+    __tablename__ = "camera_health_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Camera wall-clock at which the daily report was generated, stored naive. Interpret under ServerSettings.timezone.
+    reported_at = Column(DateTime(timezone=False), nullable=False, index=True)
+
+    # Health metrics
+    battery_percent = Column(Integer, nullable=True)  # 0-100
+    signal_quality = Column(Integer, nullable=True)   # CSQ value (0-31)
+    temperature_c = Column(Integer, nullable=True)    # Celsius
+    sd_utilization_percent = Column(Float, nullable=True)  # 0-100
+
+    # Image counts from SD card
+    total_images = Column(Integer, nullable=True)     # Images on SD card
+    sent_images = Column(Integer, nullable=True)      # Images already transmitted
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # One-report-per-camera-per-day uniqueness is enforced at the DB level via a functional
+    # unique index on (camera_id, reported_at::date) declared in the migration.
+
+
+class Detection(Base):
+    """Object detection result"""
+    __tablename__ = "detections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    image_id = Column(Integer, ForeignKey("images.id"), nullable=False, index=True)
+    category = Column(String(50), nullable=True, index=True)  # animal, person, vehicle
+    bbox = Column(JSON, nullable=False)  # {x, y, width, height}
+    confidence = Column(Float, nullable=False)
+
+    # Relationships
+    image = relationship("Image", back_populates="detections")
+    classifications = relationship("Classification", back_populates="detection", cascade="all, delete-orphan")
+
+
+class Classification(Base):
+    """Species classification result"""
+    __tablename__ = "classifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    detection_id = Column(Integer, ForeignKey("detections.id"), nullable=False, index=True)
+    species = Column(String(255), nullable=False, index=True)  # Top-1 species
+    confidence = Column(Float, nullable=False)  # Top-1 confidence
+    raw_prediction = Column(String(512), nullable=True)  # Full SpeciesNet label (semicolon-delimited)
+    raw_confidence = Column(Float, nullable=True)  # Raw model confidence before any mapping
+
+    # Relationships
+    detection = relationship("Detection", back_populates="classifications")
+
+
+class HumanObservation(Base):
+    """Human-entered species observation for an image (image-level, not detection-level)"""
+    __tablename__ = "human_observations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    image_id = Column(Integer, ForeignKey("images.id", ondelete="CASCADE"), nullable=False, index=True)
+    species = Column(String(255), nullable=False, index=True)
+    count = Column(Integer, nullable=False, default=1)
+    sex = Column(String(50), nullable=False, server_default='unknown')
+    life_stage = Column(String(50), nullable=False, server_default='unknown')
+    behavior = Column(String(50), nullable=False, server_default='unknown')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Relationships
+    image = relationship("Image", back_populates="human_observations")
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_user_id])
+
+
+class Project(Base):
+    """Project/study area with species configuration"""
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    location = Column(Geography(geometry_type='POLYGON', srid=4326), nullable=True)
+    included_species = Column(JSON, nullable=True)  # List of species names that ARE present in project area (null = all species)
+    image_path = Column(String(512), nullable=True)  # MinIO path to original project image
+    thumbnail_path = Column(String(512), nullable=True)  # MinIO path to thumbnail (256x256)
+    detection_threshold = Column(Float, nullable=False, server_default='0.5')  # Minimum confidence for detections to be visible (0.0-1.0)
+    classification_thresholds = Column(JSON, nullable=True)  # Optional {"default": float, "overrides": {species: float}}; null = no filtering
+    blur_people = Column(Boolean, nullable=False, server_default='true')  # Blur detected people in all images for privacy
+    blur_vehicles = Column(Boolean, nullable=False, server_default='true')  # Blur detected vehicles in all images for privacy
+    independence_interval_minutes = Column(Integer, nullable=False, server_default='30')  # Group same-species detections within N minutes as one event (0 = disabled)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    def blur_categories(self) -> list:
+        """Detector categories to blur for this project's images.
+
+        The single source of truth for the privacy blur. Every consumer
+        (serve path, export, notification workers) filters detections
+        against this list instead of hardcoding the category pair.
+        """
+        categories = []
+        if self.blur_people:
+            categories.append("person")
+        if self.blur_vehicles:
+            categories.append("vehicle")
+        return categories
+
+
+class ProjectMembership(Base):
+    """
+    User membership in projects with role assignment.
+
+    Maps users to projects with specific roles (project-admin or project-viewer).
+    Server admins (is_server_admin=True) have implicit access to all projects
+    and do not need entries in this table.
+
+    A user can have different roles in different projects:
+    - Alice: project-admin in Project A, project-viewer in Project B
+    - Bob: project-admin in Project A, no access to Project B
+    """
+    __tablename__ = "project_memberships"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(50), nullable=False, index=True)  # 'project-admin' or 'project-viewer'
+    # Site scope for project-viewer memberships. null means all sites, else
+    # a non-empty list of site ids the viewer is restricted to. An empty
+    # list is rejected by the API so one meaning has one form, the same
+    # convention as DetectionAlertRule.site_ids. Always null for admins.
+    # One internal writer can leave [] behind: deleting a site removes its id
+    # from stored lists, and an emptied list means the viewer sees nothing
+    # (fail closed) until an admin re-scopes them.
+    site_ids = Column(JSON, nullable=True)
+    added_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Unique constraint: user can only have one role per project
+    __table_args__ = (
+        UniqueConstraint('user_id', 'project_id', name='uq_user_project'),
+    )
+
+
+class User(Base):
+    """User account (FastAPI-Users compatible)"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_superuser = Column(Boolean, default=False, nullable=False)  # Server admin flag (FastAPI-Users compatible)
+    is_verified = Column(Boolean, default=False, nullable=False)
+
+    # Stamp of the most recent password change. The JWT strategy rejects any
+    # token whose iat (issued-at) is strictly before this. NULL means the user
+    # has never changed their password, so every token is accepted.
+    password_changed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Note: role and project_id removed - now handled via ProjectMembership table
+
+
+class CameraAlertRule(Base):
+    """
+    A user-defined camera condition alert.
+
+    Private per user, the creator is the only recipient and other members
+    never see the rule. Evaluated by the daily cron at 07:00 UTC. Fires
+    once per incident, notified_camera_ids holds the cameras already
+    alerted for the current incident and is cleared per camera when the
+    condition recovers, so the rule re-arms.
+    """
+    __tablename__ = "camera_alert_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # ON DELETE CASCADE, a private rule dies with its owner
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    rule_type = Column(String(20), nullable=False)  # battery_low | sd_full | camera_silent
+    threshold = Column(Integer, nullable=False)  # percent (battery/sd) or days (silent)
+    # null means all cameras of the project, else a non-empty list of camera
+    # ids. An empty list is rejected by the API so one meaning has one form.
+    camera_ids = Column(JSON, nullable=True)
+    channels = Column(JSON, nullable=False)  # non-empty subset of ["email", "telegram"]
+    is_active = Column(Boolean, nullable=False, server_default='true')
+    # Once-per-incident state. Always reassigned as a new list, never
+    # mutated in place, so SQLAlchemy change tracking fires.
+    notified_camera_ids = Column(JSON, nullable=False, server_default='[]')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class DetectionAlertRule(Base):
+    """
+    A user-defined real-time detection alert.
+
+    Private per user, the creator is the only recipient. Evaluated on the
+    live event path for every species_detection event. A rule names its
+    labels (species plus person/vehicle) and optionally narrows by site,
+    time of day, group size, a cooldown, and a rarity lookback.
+
+    cooldown_state maps "species|site_id" (site_id is the literal string
+    "none" for images without a resolved site) to the ISO UTC timestamp of
+    the last delivered alert. Always reassigned as a new dict, never
+    mutated in place, so SQLAlchemy change tracking fires. Entries older
+    than the cooldown are pruned on every write, so the map stays small.
+    """
+    __tablename__ = "detection_alert_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # ON DELETE CASCADE, a private rule dies with its owner
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # null means all labels (every species plus person and vehicle), else a
+    # non-empty list of label strings. An empty list is rejected by the API so
+    # "all" has one form, null, exactly like site_ids below.
+    species = Column(JSON, nullable=True)
+    # null means all sites of the project, else a non-empty list of site
+    # ids. An empty list is rejected by the API so one meaning has one form.
+    # Deleting a site removes its id from stored lists; a list that empties
+    # stays [] and the rule is paused, so it shows as inactive instead of
+    # silently never firing.
+    site_ids = Column(JSON, nullable=True)
+    channels = Column(JSON, nullable=False)  # non-empty subset of ["email", "telegram"]
+    # Optional conditions, null means the condition is off. The hour window
+    # is half-open [from, to) on the camera capture hour and wraps past
+    # midnight when from is later than to, same as the images page filter.
+    hour_from = Column(Integer, nullable=True)  # 0-23, set together with hour_to
+    hour_to = Column(Integer, nullable=True)
+    min_group_size = Column(Integer, nullable=True)  # per-species count in the image
+    cooldown_minutes = Column(Integer, nullable=True)  # per species and site
+    rarity_days = Column(Integer, nullable=True)  # project-wide lookback
+    is_active = Column(Boolean, nullable=False, server_default='true')
+    cooldown_state = Column(JSON, nullable=False, server_default='{}')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class ScheduledReportRule(Base):
+    """
+    A user-defined scheduled species report.
+
+    Private per user, the creator is the only email recipient and other
+    members never see the rule. One rule produces one email per period:
+    weekly rules send Monday covering the previous Mon-Sun week, monthly
+    rules send on the 1st covering the previous calendar month, quarterly
+    rules send on 1 Jan/Apr/Jul/Oct covering the previous quarter. Dates
+    follow the server timezone. Evaluated by the daily cron at 07:30 UTC.
+
+    No delivery state is kept: the in-memory scheduler cannot re-fire a
+    crashed run, so a missed period is possible but a duplicate email is
+    not; NotificationLog records what was sent. If manual re-runs ever
+    become a tool, a last_sent_period_end column is the upgrade path.
+    """
+    __tablename__ = "scheduled_report_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # ON DELETE CASCADE, a private rule dies with its owner
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Non-empty list of label strings. A rule always names its labels,
+    # there is no "all species" form.
+    species = Column(JSON, nullable=False)
+    frequency = Column(String(10), nullable=False)  # weekly | monthly | quarterly
+    is_active = Column(Boolean, nullable=False, server_default='true')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class TheftWatchRule(Base):
+    """
+    A user-defined theft watch (beta).
+
+    Private per user, the creator is the only recipient. One rule carries
+    two triggers. The person trigger fires on the live event path when a
+    person bounding box is an outlier against the camera's own person-box
+    history, or on any person where people are rare. The silence trigger
+    is evaluated hourly and fires when a camera has been quiet longer
+    than its own historical contact rhythm. Both triggers skip cameras
+    whose current deployment is younger than the warm-up period.
+
+    sensitivity picks a preset (low, medium, high) that sets the margins
+    of both triggers, see services/notifications/theft_watch.py.
+
+    person_cooldown_state maps camera_id (as string, JSON keys) to the
+    ISO UTC timestamp of the last delivered person alert, so one group of
+    walkers does not fire a burst of alerts. Always reassigned as a new
+    dict, never mutated, same convention as DetectionAlertRule.
+
+    notified_camera_ids is the once-per-incident state of the silence
+    trigger, same convention as CameraAlertRule: a camera in the list has
+    an active alert; it leaves the list on recovery, which re-arms it.
+    """
+    __tablename__ = "theft_watch_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # ON DELETE CASCADE, a private rule dies with its owner
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sensitivity = Column(String(10), nullable=False)  # low | medium | high
+    # null means all sites of the project, else a non-empty list of site
+    # ids. An empty list is rejected by the API so one meaning has one form.
+    # Deleting a site removes its id from stored lists; a list that empties
+    # stays [] and the rule is paused, same as DetectionAlertRule.
+    site_ids = Column(JSON, nullable=True)
+    channels = Column(JSON, nullable=False)  # non-empty subset of ["email", "telegram"]
+    is_active = Column(Boolean, nullable=False, server_default='true')
+    person_cooldown_state = Column(JSON, nullable=False, server_default='{}')
+    notified_camera_ids = Column(JSON, nullable=False, server_default='[]')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class ProjectNotificationPreference(Base):
+    """Per-user per-project notification preferences"""
+    __tablename__ = "project_notification_preferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, server_default="false")
+    telegram_chat_id = Column(String(50), nullable=True)  # Telegram chat ID
+    notify_species = Column(JSON, nullable=True)  # DEPRECATED: Use notification_channels instead
+    notify_low_battery = Column(Boolean, nullable=False, server_default="true")  # DEPRECATED: Use notification_channels instead
+    battery_threshold = Column(Integer, nullable=False, server_default="30")  # DEPRECATED: Use notification_channels instead
+    notify_system_health = Column(Boolean, nullable=False, server_default="false")  # DEPRECATED: Use notification_channels instead
+    notification_channels = Column(JSON, nullable=True)  # Per-notification-type channel configuration
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    # Unique constraint: one preference per user per project
+    __table_args__ = (
+        UniqueConstraint('user_id', 'project_id', name='uq_user_project_notification'),
+    )
+
+
+class NotificationLog(Base):
+    """Audit trail for all sent notifications"""
+    __tablename__ = "notification_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    notification_type = Column(String(50), nullable=False, index=True)  # species_detection, low_battery, system_health
+    channel = Column(String(50), nullable=False, index=True)  # signal, email, sms, earthranger
+    status = Column(String(50), nullable=False, index=True)  # pending, sent, failed
+    trigger_data = Column(JSON, nullable=False)  # Event that triggered notification
+    message_content = Column(Text, nullable=False)
+    error_message = Column(Text, nullable=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class ProjectReminder(Base):
+    """
+    One-shot scheduled reminder tied to a project.
+
+    Project admins create rows; the daily cron at 06:45 UTC fires every row
+    where send_on <= today AND sent_at IS NULL AND cancelled_at IS NULL,
+    emails the creator, and stamps sent_at. Cancelled rows stay in the
+    table so admins can audit what was set up and never deleted in the
+    normal flow.
+    """
+    __tablename__ = "project_reminders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    send_on = Column(Date, nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    created_by_user_id = Column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_by_user_id = Column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class BulkUploadJob(Base):
+    """
+    A single bulk-image-upload request.
+
+    Project admin uploads a ZIP scoped to one camera. The bulk-upload
+    worker drains these jobs one at a time, extracting each ZIP entry
+    into the same MinIO + DB + queue pipeline that live FTPS uses, but
+    publishes to the bulk variants of the queues so live cameras keep
+    priority on the detection / classification workers.
+    """
+    __tablename__ = "bulk_upload_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String(36), unique=True, nullable=False, index=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id = Column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    # Nullable: the bulk-upload flow stages the ZIP first, lets the
+    # user (or the EXIF auto-detect) pick the camera during review,
+    # then sets camera_id at confirm time before processing begins.
+    camera_id = Column(
+        Integer, ForeignKey("cameras.id"), nullable=True, index=True
+    )
+    # Explicit historical archive intake target. Existing device/site modes
+    # continue to derive deployments as before.
+    deployment_id = Column(
+        Integer, ForeignKey("deployments.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    client_batch_id = Column(String(200), nullable=True)
+    request_fingerprint = Column(String(64), nullable=True)
+    archive_manifest = Column(JSON, nullable=True)
+    original_filename = Column(String(255), nullable=False)
+    staged_object_key = Column(String(512), nullable=False)
+    # queued | inspecting | awaiting_confirmation | processing | done | failed
+    status = Column(
+        String(30), nullable=False, server_default='queued', index=True
+    )
+    # Lease for the worker's staging/ingestion pass. The job remains in
+    # `processing` after this pass while its linked images run through ML.
+    pipeline_updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    pipeline_claim_id = Column(String(36), nullable=True)
+    pipeline_attempts = Column(Integer, nullable=False, server_default="0")
+    pipeline_error = Column(Text, nullable=True)
+    staging_complete = Column(Boolean, nullable=False, server_default="false")
+    total_files = Column(Integer, nullable=False, server_default='0')
+    processed_files = Column(Integer, nullable=False, server_default='0')
+    skipped_files = Column(Integer, nullable=False, server_default='0')
+    error_message = Column(Text, nullable=True)
+    # Inspection summary written before the user confirms. Holds entry
+    # counts by status, date range, and the auto-suggested camera if
+    # EXIF SerialNumber matches a registered camera. JSON, see
+    # services/bulk-upload/worker.py for the shape.
+    manifest = Column(JSON, nullable=True)
+    # Camera clock correction set by the uploader in the review step. The
+    # worker adds it to every EXIF capture time of the job; the raw EXIF
+    # stays in Image.image_metadata. The manifest's date_range is already
+    # corrected by the client, so the Mode B deployment dates match.
+    time_offset_seconds = Column(Integer, nullable=False, server_default="0")
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    # Set when the worker starts the process phase (after user confirm).
+    # Used by the frontend to derive a per-image processing rate that
+    # self-calibrates to the host instead of hardcoded assumptions.
+    # `started_at` covers the inspect phase + the user-paced wait in
+    # awaiting_confirmation, which would skew rate measurement wildly.
+    process_started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('project_id', 'client_batch_id', name='uq_bulk_job_project_client_batch'),
+    )
+
+
+class Rejection(Base):
+    """
+    A file that ingestion refused to turn into an Image.
+
+    Rejected files never reach the images table; they are moved to
+    <upload_root>/rejected/<reason>/ on disk. This row is the record of the
+    rejection: the Live feed, the per-camera count and File management all
+    read it, nothing scans the filesystem at read time.
+
+    project_id is resolved from device_id at rejection time where possible. It
+    is null when the file carries no usable device id (corrupt file, stripped
+    EXIF, or a camera that is not registered yet); those rows never appear in a
+    project feed and stay visible only on the server-admin file page.
+    """
+    __tablename__ = "rejections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(255), nullable=False)  # original camera filename
+    # Absolute path of the moved file under <upload_root>/rejected/<reason>/.
+    # Matches what ingestion_monitoring reports; both api and ingestion
+    # containers mount the same /uploads volume.
+    disk_path = Column(String(512), nullable=False)
+    # Where the file sat under the upload root before the move, relative and
+    # POSIX (e.g. "INSTAR/lat52.02_lon12.98/20260409/images/A.jpeg"). Reprocess
+    # puts the file back here so a path-based profile can identify it again.
+    # Null on rows from before the column existed; those fall back to the
+    # upload root.
+    source_path = Column(String(512), nullable=True)
+    reason = Column(String(50), nullable=False, index=True)
+    details = Column(Text, nullable=True)
+    device_id = Column(String(50), nullable=True, index=True)
+    camera_id = Column(
+        Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    project_id = Column(
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # Camera wall-clock at capture, stored naive (only set where known).
+    captured_at = Column(DateTime(timezone=False), nullable=True)
+    exif_metadata = Column(JSON, nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    # Server wall-clock at rejection (aware UTC), the feed sort key.
+    rejected_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class FeedEvent(Base):
+    """
+    One entry in a project's camera updates feed.
+
+    Written by ingestion when a deployment is created: a camera sent its first
+    image (camera_first_seen), or a confirmed relocation opened a new
+    deployment (camera_moved). Entries report what the system already did;
+    they never block ingestion. Each entry has one shared state: needs review
+    (resolved_action NULL) or reviewed. A project admin reviews it by
+    correcting it (rename the site, pick another site, split off a new site,
+    undo a move) or by confirming it as is; that stamps the resolved_*
+    columns for everyone. No personal read state on purpose.
+    """
+    __tablename__ = "feed_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(30), nullable=False)  # 'camera_first_seen' | 'camera_moved'
+    # The deployment the event created and the site it was put on. SET NULL
+    # so entries survive later merges and site deletions (they then render
+    # read-only where an action needs the missing row).
+    deployment_id = Column(Integer, ForeignKey("deployments.id", ondelete="SET NULL"), nullable=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True)
+    # Where the camera stood before a move. NULL for camera_first_seen.
+    from_site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True)
+    distance_m = Column(Float, nullable=True)  # move distance; NULL for camera_first_seen
+    # Whether the site was auto-created for this deployment (vs an existing
+    # site reused). Drives the entry copy, and the "new site" action only
+    # shows when the site already existed.
+    site_created = Column(Boolean, nullable=False, server_default='false')
+    # The site's name when the event happened, frozen. The live name can be
+    # renamed later; the entry must keep saying what the site was called at
+    # the time ("automatically named Site at 53.2460, 5.2620").
+    original_site_name = Column(String(255), nullable=True)
+    # Server wall-clock (aware UTC), the feed sort key and unseen-badge cutoff.
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    # Which action a human took on this entry, if any. Re-resolving is allowed
+    # (a user can change their mind); the last action wins.
+    # 'rename_site' | 'set_site' | 'new_site' | 'not_moved' | 'confirmed'
+    # ('confirmed' = nothing to change, closes the entry without side effects)
+    resolved_action = Column(String(20), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class TelegramConfig(Base):
+    """System-wide Telegram bot configuration (admin only, single row)"""
+    __tablename__ = "telegram_config"
+
+    id = Column(Integer, primary_key=True)
+    bot_token = Column(String(100), nullable=True)  # From @BotFather
+    bot_username = Column(String(100), nullable=True)  # e.g., "AddaxAI_bot"
+    is_configured = Column(Boolean, nullable=False, server_default="false")
+    last_health_check = Column(DateTime(timezone=True), nullable=True)
+    health_status = Column(String(50), nullable=True)  # healthy, error, not_configured
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class ServerSettings(Base):
+    """Server-wide settings (single row)"""
+    __tablename__ = "server_settings"
+
+    id = Column(Integer, primary_key=True)
+    timezone = Column(String(50), nullable=True)  # NULL = not configured yet
+    speciesnet_country_code = Column(String(10), nullable=True)   # ISO 3166-1 alpha-3
+    speciesnet_admin1_region = Column(String(20), nullable=True)  # ISO 3166-2 (US states)
+    # Email server admins when the automated backup or cold-tier migration fails.
+    # Both default TRUE. Gated at runtime by BACKUP_ENABLED / COLD_TIER_ENDPOINT
+    # so a server that has the feature off never sends alerts about it.
+    notify_backup_failures = Column(Boolean, nullable=False, server_default="true")
+    notify_cold_tier_failures = Column(Boolean, nullable=False, server_default="true")
+    # Email server admins when the daily security check fails. Server-wide on
+    # purpose: the security state belongs to the machine, not to a project, and
+    # only a server admin can act on it. Default TRUE.
+    notify_security_failures = Column(Boolean, nullable=False, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class TaxonomyMapping(Base):
+    """Taxonomy mapping entry for SpeciesNet walk-up algorithm"""
+    __tablename__ = "taxonomy_mapping"
+
+    id = Column(Integer, primary_key=True, index=True)
+    latin = Column(String(255), unique=True, nullable=False, index=True)
+    common = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TelegramLinkingToken(Base):
+    """Temporary tokens for automated Telegram account linking via deep links"""
+    __tablename__ = "telegram_linking_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used = Column(Boolean, nullable=False, server_default="false")
+
+
+class ProjectDocument(Base):
+    """Project document/file uploaded by admin"""
+    __tablename__ = "project_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    original_filename = Column(String(255), nullable=False)
+    storage_path = Column(String(512), nullable=False)
+    file_size = Column(Integer, nullable=False)
+    content_type = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    uploaded_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_user_id])
+
+
+class SpeciesTaxonomy(Base):
+    """
+    Maps common species names (from classification models) to scientific names.
+
+    Global lookup table used for CamTrap DP export and other biodiversity standards.
+    Pre-populated for DeepFaune v1.4. Future models (e.g., SpeciesNet) add their own entries.
+    """
+    __tablename__ = "species_taxonomy"
+
+    id = Column(Integer, primary_key=True, index=True)
+    common_name = Column(String(255), unique=True, nullable=False, index=True)
+    scientific_name = Column(String(255), nullable=True)  # null = unmapped (e.g., "micromammal")
+    taxon_rank = Column(String(50), nullable=False, server_default='species')  # species, genus, family, order, class
+    model_source = Column(String(100), nullable=False, server_default='deepfaune')
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class UserInvitation(Base):
+    """
+    Pending user invitations.
+
+    Tracks emails that have been invited but haven't registered yet.
+    When user registers, their pre-assigned project memberships are automatically applied.
+
+    For project-level invitations (project-admin, project-viewer):
+    - project_id and role are set
+
+    For server-admin invitations:
+    - project_id is NULL (server admins have access to all projects)
+    - role is 'server-admin'
+
+    Security: Uses secure tokens for invitation links. Token proves email ownership.
+    """
+    __tablename__ = "user_invitations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    invited_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL for server-admin
+    role = Column(String(50), nullable=False, index=True)  # 'server-admin', 'project-admin', or 'project-viewer'
+    # Site scope carried onto the membership at registration. Same
+    # semantics as ProjectMembership.site_ids, only for project-viewer.
+    site_ids = Column(JSON, nullable=True)
+    token = Column(String(64), unique=True, nullable=True, index=True)  # Secure URL-safe token for invite link
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)  # Expiry date (default 7 days)
+    used = Column(Boolean, nullable=False, server_default="false", index=True)  # Whether invitation has been accepted
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProjectIntegration(Base):
+    """
+    One outbound integration of a project (EarthRanger via Gundi, Sensing
+    Clues via Central). One row per project and kind; the row existing
+    means the integration is configured. A credential in config is plain
+    (the same trade-off as TelegramConfig.bot_token) and is never returned
+    by the API. The status columns feed the integration page: the delivery
+    worker stamps them after every attempt.
+    """
+    __tablename__ = "project_integrations"
+    __table_args__ = (
+        UniqueConstraint("project_id", "kind", name="uq_project_integrations_project_kind"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(50), nullable=False)  # earthranger | sensingclues
+    config = Column(JSON, nullable=False)  # earthranger: {"api_key": str}, sensingclues: {"group_id": int}
+    is_enabled = Column(Boolean, nullable=False, server_default="true")
+    health_status = Column(String(50), nullable=True)  # healthy | error
+    last_health_check = Column(DateTime(timezone=True), nullable=True)
+    last_sent_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    events_sent = Column(Integer, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
