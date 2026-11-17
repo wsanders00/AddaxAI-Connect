@@ -84,3 +84,79 @@ which worker customizations upstream replaces, preserve migration ancestry and
 existing annotations, and validate the external importer's exact-source/schema
 contract. Do not assume the older fork README or a shared VERSION string proves
 which code any particular deployed component runs.
+
+## Upgrade assessment — November 17, 2026
+
+The reconciled baseline was published to the fork's `development` branch at
+`defe2e09` (source checkpoint `bfa875f9`). Production was not changed.
+The candidate assessed is upstream **v0.21.2**, commit
+`dc7223ddf6e618d316529cc55220dcf4038074dd`, verified against GitHub's release API
+and fetched tags. The cached web release listing lagged behind the API.
+
+### What our fork actually changes
+
+| Change | Observed deployment status | Upgrade treatment |
+| --- | --- | --- |
+| Database-backed worker claims, leases, bounded retry and stale-work recovery | Present in detection, SpeciesNet and bulk worker sources | Preserve the contract while porting to the new worker architecture. |
+| Guarded detection/classification writes that reuse existing results on redelivery | Present in deployed worker sources; protects existing verification records | Retain and test crash-after-commit and duplicate-delivery cases. |
+| Durable per-file bulk outcomes, transaction-linked image creation, staged-file checks and classification-aware completion | Present in deployed bulk worker and its shared/ingestion overlays | Upstream upload resume is not equivalent to this durable worker ledger. |
+| Bulk progress heartbeat tied to completed work | Present in deployed bulk worker | Keep useful liveness semantics when integrating new queue/model telemetry. |
+| Bulk validation up to 50 MiB | Present in deployed bulk worker | Upstream now has a shared 50 MB bulk limit; prefer its implementation after boundary tests. |
+| SpeciesNet country/state normalization, including `US-CA` to `CA` | Present in deployed classifier | Upstream implements state conversion in its new SpeciesNet module; compare validation and inference behavior before dropping ours. |
+| Archive target, source-hash and timestamp/provenance checks; session-lifetime fix | Code retained in bulk worker, schema retained in API | Legacy archive API/UI are absent from the deployed API/frontend. Do not describe this as an active end-to-end archive interface or re-enable it implicitly. |
+| Custom health API/UI and bulk API/UI | Historical fork work, absent from deployed v0.16 API/frontend | Remain in Git history; not automatically carried into an upgrade. |
+| Reclassification utility and tests | Unfinished local files, not observed deployed | Remain outside the published baseline. |
+
+Some differences are older component code, not deliberate features: for example,
+the bulk worker's vendored ingestion helper lacks the newer retired-camera
+filters, and worker shared libraries predate the API's privacy module. The
+checkpoint preserves what runs; these differences need explicit review rather
+than automatic preservation as requirements. The external RC23 importer and
+container libc repair remain separate from application customization.
+
+### Benefits in the newer releases
+
+- [v0.17.0](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.17.0): per-project SpeciesNet geography/taxonomy and revised inference behavior.
+- [v0.18.0](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.18.0): per-project model selection and a unified classification service.
+- [v0.19.0](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.19.0) and [v0.20.0](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.20.0): transport/password hardening and optional two-factor authentication.
+- [v0.21.0](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.21.0): SD/live duplicate detection, resumable uploads, clearer skips and longer authenticated sessions.
+- [v0.21.1](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.21.1) and [v0.21.2](https://github.com/PetervanLunteren/AddaxAI-Connect/releases/tag/v0.21.2): faster image delivery and notification fixes.
+
+### Required integration and validation
+
+1. Start an isolated integration branch from this baseline targeting v0.21.2.
+   Keep this manifest as the historical deployed checkpoint; do not overwrite
+   its hashes to make upgraded code appear equivalent to the old deployment.
+2. Reconcile migrations. Simply combining the trees leaves our
+   `20261014_preserve_archive_merge` and upstream `20261112_two_factor` as two
+   heads. Add a reviewed merge revision; do not rewrite applied revisions.
+   Rehearse migration on a restored database copy, checking custom columns,
+   annotations, image counts and project model/geography/taxonomy assignments.
+   The latest country/taxonomy migrations copy server data before dropping old
+   fields; skip the intermediate v0.17 deployment. Model backfill uses taxonomy
+   presence, so verify each real project's resulting model explicitly.
+3. Port recovery and guarded writes into `services/classification`, detection,
+   and bulk. Reconcile the shared model definitions with the new schema rather
+   than reusing old full-file overlays. Test duplicate delivery, worker death,
+   lease expiry, partial uploads, cancellation and manual verification retention.
+4. Validate the external RC23 importer's exact-source/schema contract and its
+   receipts, provenance, duplicate handling and notification suppression.
+   Upstream removes the legacy ZIP/inspect queue and changes accepted bulk
+   extensions; review these against actual clients. Do not run the optional
+   duplicate-removal script against production as part of this assessment.
+5. Build and test Pi ARM64 control-plane and BatDuck GPU images. Adapt the
+   unified classifier, model cache/memory requirements, credentials/config,
+   security settings and health checks to the owned Podman deployment. Review
+   the libc repair against the new base/dependencies. Upstream API image builds
+   now use a BuildKit `.git` bind mount for commit identity; verify compatibility
+   with our build path. Stop old classifier consumers during eventual cutover.
+6. Verify a current database/media backup and perform a restore rehearsal.
+   Stage a representative import and classification sample, including US-state
+   inference and existing human labels. Plan a coordinated service cutover and
+   rollback using old images plus the matching database backup; migration
+   downgrade is not a substitute for restore.
+
+Recommendation: target v0.21.2 directly in an isolated integration branch. Its
+upload, inference and security improvements are useful, but source merge success
+alone would not establish readiness. This assessment did not merge upstream,
+build images, run migrations, modify production, or establish an upgrade ETA.
