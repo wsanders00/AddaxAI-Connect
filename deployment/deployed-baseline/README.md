@@ -87,6 +87,15 @@ which code any particular deployed component runs.
 
 ## Upgrade assessment — November 17, 2026
 
+**Direction superseded by the owner's stock-first decision:** do not automatically
+port these worker patches. An isolated, unmodified v0.21.2 dev instance is now
+running on BatDuck. Initial HTTP upload/resume/duplicate tests passed; explicit
+historical camera/deployment targeting is a confirmed API gap. The importer
+remains separate and production remains on the reconciled baseline. Deployment
+and acceptance evidence are owned by the neighboring infrastructure project at
+`cross-vlan-services/config/addaxai/stock-dev-20261117/README.md`. The assessment
+below records the earlier patch-preserving option, not the current execution plan.
+
 The reconciled baseline was published to the fork's `development` branch at
 `defe2e09` (source checkpoint `bfa875f9`). Production was not changed.
 The candidate assessed is upstream **v0.21.2**, commit
