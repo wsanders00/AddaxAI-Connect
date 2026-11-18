@@ -172,14 +172,18 @@ build images, run migrations, modify production, or establish an upgrade ETA.
 
 ## Separate AddaxAI Desktop trial
 
-A separate trial will test the official [AddaxAI Desktop v7.20.0 Linux
-release](https://github.com/PetervanLunteren/AddaxAI/releases/tag/v7.20.0)
-in rootless Podman. A thin wrapper will run the bundled backend and serve its
-existing web interface privately. The trial uses a mixed photo and video
-deployment to evaluate analysis, playback and seeking, tracked detections,
-review persistence across container recreation, and research exports. CPU and
-GPU acceptance will be recorded separately.
+The official Desktop v7.20.0 Linux package ran in rootless Podman with its bundled
+backend and a private reverse proxy. In the browser, a CPU job analyzed one
+photo and one original H.264 clip. The clip produced one deer track across 44
+sampled frames. Playback, seeking and the box on the selected frame worked.
+The frame review and a manually confirmed count survived container recreation.
+The spreadsheet export wrote six CSV tables, including Files, Counts and Frames.
+[Upstream Desktop release](https://github.com/PetervanLunteren/AddaxAI/releases/tag/v7.20.0)
 
-The trial is planned. The official package and wrapper are the first approach,
-with a source build considered if a core requirement needs a change inside
-the package. This work is separate from deploying or modifying Connect.
+One camera recorded its photo in local time and its video creation timestamp in
+UTC. Desktop treated the video time as local even with the project timezone set.
+It separated the two files into different events and exported the five-hour
+error. Reading the video timestamp as UTC reproduced the camera overlay time.
+Camera-specific timestamp handling needs a further test before using mixed
+archives for encounter counts or activity analysis. GPU inference remains
+untested in this Desktop trial.
