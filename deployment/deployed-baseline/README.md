@@ -184,6 +184,14 @@ One camera recorded its photo in local time and its video creation timestamp in
 UTC. Desktop treated the video time as local even with the project timezone set.
 It separated the two files into different events and exported the five-hour
 error. Reading the video timestamp as UTC reproduced the camera overlay time.
-Camera-specific timestamp handling needs a further test before using mixed
-archives for encounter counts or activity analysis. GPU inference remains
-untested in this Desktop trial.
+
+A follow-up tested two photo/video pairs from the same registered camera, one
+in standard time and one in daylight time. The standalone preparer's time
+resolver supplied the local clip start. Writing it to the movie creation field
+on separate full-length Desktop copies preserved both video tracks and the audio
+packet for packet. Stock Desktop grouped each pair into one event and exported
+one white-tailed deer per event. The Files, Counts and Frames tables agreed with
+the corrected times. These copies carry a Desktop-specific interpretation of
+the movie creation time. Keep the original UTC metadata as the archive record
+and verify other camera clocks before wider use. GPU inference remains untested
+in this Desktop trial.
