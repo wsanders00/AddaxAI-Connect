@@ -169,3 +169,17 @@ Recommendation: target v0.21.2 directly in an isolated integration branch. Its
 upload, inference and security improvements are useful, but source merge success
 alone would not establish readiness. This assessment did not merge upstream,
 build images, run migrations, modify production, or establish an upgrade ETA.
+
+## Separate AddaxAI Desktop trial
+
+A separate trial will test the official [AddaxAI Desktop v7.20.0 Linux
+release](https://github.com/PetervanLunteren/AddaxAI/releases/tag/v7.20.0)
+in rootless Podman. A thin wrapper will run the bundled backend and serve its
+existing web interface privately. The trial uses a mixed photo and video
+deployment to evaluate analysis, playback and seeking, tracked detections,
+review persistence across container recreation, and research exports. CPU and
+GPU acceptance will be recorded separately.
+
+The trial is planned. The official package and wrapper are the first approach,
+with a source build considered if a core requirement needs a change inside
+the package. This work is separate from deploying or modifying Connect.
