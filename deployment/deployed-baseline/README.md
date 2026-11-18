@@ -1,11 +1,10 @@
-# Deployed application baseline — 2026-11-17
+# Historical Connect v0.16.0 deployment baseline — 2026-11-17
 
-This directory reconciles the fork to the observed production application code.
-It is a source checkpoint, not an upgrade or a production deployment instruction.
-The upstream base is `v0.16.0`, commit
-`5eded40f2ad1de7495520982be232f806827db5f`.
+This directory preserves the application code observed before the November 17 upgrade. Production subsequently moved to upstream Connect v0.21.2 with a separately versioned importer/adapter and deployment-specific frontend packaging and routing. Use the manifest and overlays here to reproduce the earlier v0.16.0 combination. Its upstream commit is `5eded40f2ad1de7495520982be232f806827db5f`. The Desktop trial at the end concerns a separate application.
 
-## What is actually deployed
+<a id="what-is-actually-deployed"></a>
+
+## What ran at the v0.16.0 checkpoint
 
 | Component | Observed application code |
 | --- | --- |
@@ -24,7 +23,7 @@ Git in the original checkout's ignored `data/review/deployed-reconciliation-2026
 
 ## Preserve the component boundaries
 
-Production does not use one version of `shared/` everywhere:
+The v0.16.0 deployment used multiple versions of `shared/`:
 
 - The root `shared/` tree is the API's upstream v0.16 library.
 - `overlays/worker-common/shared/` contains the deployed worker differences.
@@ -87,14 +86,7 @@ which code any particular deployed component runs.
 
 ## Upgrade assessment — November 17, 2026
 
-**Direction superseded by the owner's stock-first decision:** do not automatically
-port these worker patches. An isolated, unmodified v0.21.2 dev instance is now
-running on BatDuck. Initial HTTP upload/resume/duplicate tests passed; explicit
-historical camera/deployment targeting is a confirmed API gap. The importer
-remains separate and production remains on the reconciled baseline. Deployment
-and acceptance evidence are owned by the neighboring infrastructure project at
-`cross-vlan-services/config/addaxai/stock-dev-20261117/README.md`. The assessment
-below records the earlier patch-preserving option, not the current execution plan.
+The earlier assessment below considered porting worker changes. The deployment instead adopted stock v0.21.2 after testing its APIs and moving historical camera/deployment targeting into the external adapter. The dated cutover evidence is kept by the infrastructure project.
 
 The reconciled baseline was published to the fork's `development` branch at
 `defe2e09` (source checkpoint `bfa875f9`). Production was not changed.
